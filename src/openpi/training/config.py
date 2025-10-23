@@ -519,6 +519,11 @@ class TrainConfig:
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
 
+    # Profiling options
+    profiling_enabled: bool = False
+    # If true, will compute and log prefix token length on log interval (extra compute).
+    profiling_prefix_shape: bool = False
+
     # If the value is greater than 1, FSDP will be enabled and shard across number of specified devices; overall
     # device memory will be reduced but training could potentially be slower.
     # eg. if total device is 4 and fsdp devices is 2; then the model will shard to 2 devices and run
@@ -687,6 +692,83 @@ _CONFIGS = [
         # Turn off EMA for LoRA finetuning.
         ema_decay=None,
     ),
+    # Example: pi05 + LoRA + LightVLA-style token pruning on a local ALOHA dataset
+    TrainConfig(
+        name="pi05_aloha_mobile_dummy_lora_pruned",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            token_pruning_enabled=True,
+            token_prune_ratio=0.25,
+        ),
+        data=LeRobotAlohaDataConfig(
+            # Point this to your local LeRobot dataset path
+            repo_id="/home/laiminxin/dataset/aloha_mobile_dummy",
+            default_prompt="perform the mobile task",
+            adapt_to_pi=True,
+            use_delta_joint_actions=True,
+        ),
+        # Load pi0.5 base checkpoint and only train LoRA params
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/laiminxin/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=20_000,
+        batch_size=32,
+        save_interval=1000,
+        log_interval=100,
+    ),
+    # Example: pi05 + LoRA + pruning with LeRobot-converted ALOHA dataset (repo_id under LEROBOT_HOME)
+    TrainConfig(
+        name="pi05_aloha_mobile_lerobot_lora_pruned",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            token_pruning_enabled=True,
+            token_prune_ratio=0.25,
+        ),
+        data=LeRobotAlohaDataConfig(
+            # Use the LeRobot repo id created by the converter, not a filesystem path
+            repo_id="local/aloha_mobile_dummy",
+            default_prompt="perform the mobile task",
+            adapt_to_pi=True,
+            use_delta_joint_actions=True,
+            # Override repack to match converter's camera keys
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                # Provide only the cameras present in your converted dataset.
+                                # Missing cameras are handled later by AlohaInputs.
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/laiminxin/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=20_000,
+        batch_size=32,
+        save_interval=1000,
+        log_interval=100,
+    ),
     TrainConfig(
         name="pi0_fast_libero",
         # Here is an example of loading a pi0-FAST model for full finetuning.
@@ -748,7 +830,7 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/laiminxin/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
     ),
@@ -812,7 +894,7 @@ _CONFIGS = [
                 ]
             ),
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/laiminxin/pi05_base/params"),
         num_train_steps=20_000,
         batch_size=64,
     ),
@@ -869,7 +951,7 @@ _CONFIGS = [
                 asset_id="droid",
             ),
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/laiminxin/pi05_base/params"),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=1_000,
             peak_lr=5e-5,

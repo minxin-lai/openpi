@@ -10,9 +10,9 @@ import shutil
 from typing import Literal
 
 import h5py
-from lerobot.common.datasets.lerobot_dataset import LEROBOT_HOME
+from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.common.datasets.push_dataset_to_hub._download_raw import download_raw
+# from lerobot.common.datasets.push_dataset_to_hub._download_raw import download_raw  # Removed in newer lerobot version
 import numpy as np
 import torch
 import tqdm
@@ -58,7 +58,7 @@ def create_empty_dataset(
     ]
     cameras = [
         "cam_high",
-        "cam_low",
+        # "cam_low",  # Not present in mobile ALOHA data
         "cam_left_wrist",
         "cam_right_wrist",
     ]
@@ -109,8 +109,8 @@ def create_empty_dataset(
             ],
         }
 
-    if Path(LEROBOT_HOME / repo_id).exists():
-        shutil.rmtree(LEROBOT_HOME / repo_id)
+    if Path(HF_LEROBOT_HOME / repo_id).exists():
+        shutil.rmtree(HF_LEROBOT_HOME / repo_id)
 
     return LeRobotDataset.create(
         repo_id=repo_id,
@@ -181,7 +181,7 @@ def load_raw_episode_data(
             ep,
             [
                 "cam_high",
-                "cam_low",
+                # "cam_low",
                 "cam_left_wrist",
                 "cam_right_wrist",
             ],
@@ -209,6 +209,7 @@ def populate_dataset(
             frame = {
                 "observation.state": state[i],
                 "action": action[i],
+                "task": task,
             }
 
             for camera, img_array in imgs_per_cam.items():
@@ -221,7 +222,7 @@ def populate_dataset(
 
             dataset.add_frame(frame)
 
-        dataset.save_episode(task=task)
+        dataset.save_episode()
 
     return dataset
 
@@ -238,13 +239,14 @@ def port_aloha(
     mode: Literal["video", "image"] = "image",
     dataset_config: DatasetConfig = DEFAULT_DATASET_CONFIG,
 ):
-    if (LEROBOT_HOME / repo_id).exists():
-        shutil.rmtree(LEROBOT_HOME / repo_id)
+    if (HF_LEROBOT_HOME / repo_id).exists():
+        shutil.rmtree(HF_LEROBOT_HOME / repo_id)
 
     if not raw_dir.exists():
-        if raw_repo_id is None:
-            raise ValueError("raw_repo_id must be provided if raw_dir does not exist")
-        download_raw(raw_dir, repo_id=raw_repo_id)
+        raise ValueError(
+            f"raw_dir {raw_dir} does not exist. Please provide a valid path to the raw ALOHA data directory. "
+            "The download_raw function has been removed in newer versions of lerobot."
+        )
 
     hdf5_files = sorted(raw_dir.glob("episode_*.hdf5"))
 
@@ -262,7 +264,7 @@ def port_aloha(
         task=task,
         episodes=episodes,
     )
-    dataset.consolidate()
+    # dataset.consolidate()  # Removed in newer lerobot version
 
     if push_to_hub:
         dataset.push_to_hub()

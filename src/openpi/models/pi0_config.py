@@ -32,6 +32,19 @@ class Pi0Config(_model.BaseModelConfig):
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
+    # --- LightVLA-style visual token pruning (JAX, parameter-free) ---
+    # If true, prunes visual patch tokens in the prefix before passing to the LLM.
+    token_pruning_enabled: bool = False
+    # Fraction of visual tokens to keep per camera (fixed Top-K per image stream).
+    # Effective K is max(1, floor(ratio * num_patches_per_image)).
+    token_prune_ratio: float = 0.25
+    # Temperature for softmax in training-time straight-through (lower = harder selection).
+    token_prune_tau: float = 1.0
+    # Minimum number of tokens to keep per camera.
+    token_prune_min_keep: int = 1
+    # Optional noise scale for scores during training (set 0.0 to disable).
+    token_prune_noise_scale: float = 0.0
+
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)

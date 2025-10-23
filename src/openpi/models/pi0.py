@@ -67,6 +67,12 @@ class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
+        # Token pruning configuration (LightVLA-style, parameter-free)
+        self.token_pruning_enabled = getattr(config, "token_pruning_enabled", False)
+        self.token_prune_ratio = getattr(config, "token_prune_ratio", 0.25)
+        self.token_prune_tau = getattr(config, "token_prune_tau", 1.0)
+        self.token_prune_min_keep = getattr(config, "token_prune_min_keep", 1)
+        self.token_prune_noise_scale = getattr(config, "token_prune_noise_scale", 0.0)
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -107,34 +113,116 @@ class Pi0(_model.BaseModel):
         self, obs: _model.Observation
     ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
         input_mask = []
-        ar_mask = []
-        tokens = []
-        # embed images
+        ar_mask: list[bool] = []
+        tokens_out = []
+
+        # Collect per-camera image tokens (to optionally prune later)
+        image_tokens_list = []
+        image_masks_list = []
         for name in obs.images:
             image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
-
-            tokens.append(image_tokens)
-            input_mask.append(
-                einops.repeat(
-                    obs.image_masks[name],
-                    "b -> b s",
-                    s=image_tokens.shape[1],
-                )
+            image_mask = einops.repeat(
+                obs.image_masks[name],
+                "b -> b s",
+                s=image_tokens.shape[1],
             )
-            # image tokens attend to each other
-            ar_mask += [False] * image_tokens.shape[1]
+            image_tokens_list.append(image_tokens)
+            image_masks_list.append(image_mask)
 
-        # add language (aka tokenized inputs)
+        # Optionally compute prompt embeddings for pruning guidance (do not append yet)
+        prompt_embed = None
+        prompt_mask = None
         if obs.tokenized_prompt is not None:
-            tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
-            tokens.append(tokenized_inputs)
-            input_mask.append(obs.tokenized_prompt_mask)
-            # full attention between image and language inputs
-            ar_mask += [False] * tokenized_inputs.shape[1]
-        tokens = jnp.concatenate(tokens, axis=1)
+            prompt_embed = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
+            prompt_mask = obs.tokenized_prompt_mask
+
+        # Helpers for pruning
+        def _rms_norm(x, eps=1e-6):
+            dtype = x.dtype
+            var = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True)
+            x = x * jax.lax.rsqrt(var + eps)
+            return x.astype(dtype)
+
+        def _prune_tokens(patches, mask, prompt):
+            # patches: [b, s, d], mask: [b, s], prompt: [b, t, d] | None
+            # Returns selected patches [b, k, d] and mask [b, k]
+            s = patches.shape[1]
+            k = max(self.token_prune_min_keep, int(s * float(self.token_prune_ratio)))
+
+            # Prompt-guided similarity, fallback to L2 norm
+            if prompt is not None:
+                prompt_mean = jnp.mean(prompt, axis=1)
+                score = jnp.einsum("bsd,bd->bs", _rms_norm(patches), _rms_norm(prompt_mean))
+            else:
+                score = jnp.linalg.norm(patches, axis=-1)
+
+            # Optionally add small noise during training to encourage exploration.
+            # Note: embed_prefix does not receive an RNG; we skip true randomness here to keep determinism.
+            # Users can emulate noise by data augmentation upstream.
+            train_mode = not self.deterministic
+            if train_mode and self.token_prune_noise_scale > 0.0:
+                # Deterministic pseudo-noise from content: project to mean as a proxy.
+                noise = jnp.tanh(score)
+                score = score + self.token_prune_noise_scale * noise
+
+            # Hard Top-K indices (deterministic)
+            idx = jnp.argsort(score, axis=1)[:, -k:]
+            idx_exp = idx[:, :, None]
+            patches_hard = jnp.take_along_axis(patches, idx_exp, axis=1)
+            mask_hard = jnp.take_along_axis(mask, idx, axis=1)
+
+            # Straight-through gradient: soften with temperature during training
+            if train_mode and self.token_prune_tau > 0:
+                w = jax.nn.softmax(score / self.token_prune_tau, axis=-1)  # [b, s]
+                # Expected patch as soft mixture; replicate across k slots
+                patch_soft = jnp.einsum("bs,bsd->bd", w, patches)
+                patches_soft = jnp.repeat(patch_soft[:, None, :], k, axis=1)
+                patches_sel = patches_hard + patches_soft - jax.lax.stop_gradient(patches_soft)
+            else:
+                patches_sel = patches_hard
+
+            return patches_sel, mask_hard
+
+        # Apply pruning per camera if enabled
+        if self.token_pruning_enabled:
+            for patches, mask in zip(image_tokens_list, image_masks_list, strict=True):
+                pruned_patches, pruned_mask = _prune_tokens(patches, mask, prompt_embed)
+                tokens_out.append(pruned_patches)
+                input_mask.append(pruned_mask)
+                ar_mask += [False] * pruned_patches.shape[1]
+        else:
+            for patches, mask in zip(image_tokens_list, image_masks_list, strict=True):
+                tokens_out.append(patches)
+                input_mask.append(mask)
+                ar_mask += [False] * patches.shape[1]
+
+        # Append language (aka tokenized inputs) without pruning
+        if prompt_embed is not None:
+            tokens_out.append(prompt_embed)
+            input_mask.append(prompt_mask)
+            ar_mask += [False] * prompt_embed.shape[1]
+
+        tokens = jnp.concatenate(tokens_out, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask
+
+    def estimate_original_prefix_len(self, obs: _model.Observation) -> int:
+        """Estimate original (unpruned) prefix token length for telemetry.
+
+        This runs the same image/text embedding as embed_prefix but without pruning and only
+        returns the total sequence length. Intended for profiling/inference diagnostics.
+        """
+        total = 0
+        # image tokens (sum across cameras)
+        for name in obs.images:
+            image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
+            total += int(image_tokens.shape[1])
+        # text tokens
+        if obs.tokenized_prompt is not None:
+            tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
+            total += int(tokenized_inputs.shape[1])
+        return int(total)
 
     @at.typecheck
     def embed_suffix(

@@ -26,6 +26,7 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
+import openpi.training.perf as _perf
 
 
 def init_logging():
@@ -256,9 +257,21 @@ def main(config: _config.TrainConfig):
     )
 
     infos = []
+    profiler = _perf.PerformanceProfiler(
+        enabled=config.profiling_enabled,
+        batch_size=config.batch_size,
+        log_to_wandb=config.wandb_enabled,
+    )
     for step in pbar:
+        profiler.next_step()
         with sharding.set_mesh(mesh):
-            train_state, info = ptrain_step(train_rng, train_state, batch)
+            with profiler.span("data_fetch"):
+                # data for next iteration is fetched at the end of current iteration; here we time current batch consumption
+                pass
+            with profiler.span("train_step"):
+                train_state, info = ptrain_step(train_rng, train_state, batch)
+                # Ensure device work finished for accurate timing
+                _ = jax.device_get(jax.tree.map(lambda x: x, info))
         infos.append(info)
         if step % config.log_interval == 0:
             stacked_infos = common_utils.stack_forest(infos)
@@ -266,11 +279,36 @@ def main(config: _config.TrainConfig):
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
+            # Optional: profile prefix shape (extra compute)
+            if config.profiling_enabled and config.profiling_prefix_shape:
+                model = nnx.merge(train_state.model_def, train_state.params)
+                model.eval()
+                try:
+                    prefix_tokens, prefix_mask, _ = model.embed_prefix(batch[0])
+                    pruned_len = int(prefix_tokens.shape[1])
+                    profiler.set_prefix_len(pruned_len)
+                    # Also record original (unpruned) prefix length and keep ratio
+                    try:
+                        orig_len = int(model.estimate_original_prefix_len(batch[0]))
+                        profiler.set_prefix_orig_len(orig_len)
+                    except Exception as e:
+                        logging.info(f"Profiling original prefix length failed: {e}")
+                except Exception as e:  # pragma: no cover - best effort
+                    logging.info(f"Profiling prefix shape failed: {e}")
+            # Flush profiler metrics
+            perf_metrics = profiler.flush(step)
+            if perf_metrics:
+                pm_str = ", ".join(f"{k}={v:.4f}" for k, v in perf_metrics.items())
+                pbar.write(f"Perf: {pm_str}")
+                wandb.log(perf_metrics, step=step)
             infos = []
-        batch = next(data_iter)
+        with profiler.span("data_fetch"):
+            batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
-            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+            with profiler.span("checkpoint_save"):
+                _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+        profiler.end_step()
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()
