@@ -34,7 +34,13 @@ class Pi0Config(_model.BaseModelConfig):
 
     # --- LightVLA-style visual token pruning (JAX, parameter-free) ---
     # If true, prunes visual patch tokens in the prefix before passing to the LLM.
+    # Default behavior: for pi05, enable pruning by default to mirror LightVLA.
     token_pruning_enabled: bool = False
+    # Scoring mode for token importance when prompt is provided.
+    # - "prompt_attn": LightVLA-style prompt-attention scoring (default)
+    # - "prompt_mean": cosine-like dot with RMSNorm(prompt mean)
+    # - "l2_norm": fallback that ignores prompt and uses patch L2 norm
+    token_prune_scoring: str = "prompt_attn"
     # Fraction of visual tokens to keep per camera (fixed Top-K per image stream).
     # Effective K is max(1, floor(ratio * num_patches_per_image)).
     token_prune_ratio: float = 0.25
@@ -43,13 +49,17 @@ class Pi0Config(_model.BaseModelConfig):
     # Minimum number of tokens to keep per camera.
     token_prune_min_keep: int = 1
     # Optional noise scale for scores during training (set 0.0 to disable).
-    token_prune_noise_scale: float = 0.0
+    # With RNG provided, this injects Gumbel noise (recommended small value for exploration).
+    token_prune_noise_scale: float = 0.3
 
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:
             object.__setattr__(self, "discrete_state_input", self.pi05)
+        # Enable LightVLA-style pruning by default for pi05 unless explicitly disabled by config.
+        if self.pi05 and self.token_pruning_enabled is False:
+            object.__setattr__(self, "token_pruning_enabled", True)
 
     @property
     @override

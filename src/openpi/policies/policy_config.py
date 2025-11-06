@@ -72,6 +72,40 @@ def create_trained_policy(
         except ImportError:
             pytorch_device = "cpu"
 
+    # Optional runtime overrides for token pruning during inference.
+    # This allows switching between normal and pruned branches without retraining.
+    try:
+        pruning_env = os.getenv("OPENPI_PRUNING")
+        prune_ratio_env = os.getenv("OPENPI_PRUNE_RATIO")
+        def _truthy(x: str | None) -> bool:
+            if x is None:
+                return False
+            return x.lower() not in ("0", "false", "no", "off", "")
+
+        overrides_applied = False
+        if hasattr(model, "token_pruning_enabled") and (pruning_env is not None or prune_ratio_env is not None):
+            if pruning_env is not None:
+                enabled = _truthy(pruning_env)
+                setattr(model, "token_pruning_enabled", enabled)
+                overrides_applied = True
+            if prune_ratio_env is not None:
+                try:
+                    ratio = float(prune_ratio_env)
+                    ratio = max(0.0, min(1.0, ratio))
+                    setattr(model, "token_prune_ratio", ratio)
+                    overrides_applied = True
+                except Exception:
+                    logging.warning("Invalid OPENPI_PRUNE_RATIO=%s; expected float in [0,1]", prune_ratio_env)
+        if overrides_applied:
+            logging.info(
+                "[PRUNE] runtime override: enabled=%s, ratio=%s",
+                getattr(model, "token_pruning_enabled", None),
+                getattr(model, "token_prune_ratio", None),
+            )
+    except Exception:
+        # Do not fail if override parsing has issues.
+        pass
+
     return _policy.Policy(
         model,
         transforms=[
