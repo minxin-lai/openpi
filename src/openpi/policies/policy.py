@@ -67,71 +67,85 @@ class Policy(BasePolicy):
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
-        profile = bool(int(os.environ.get("OPENPI_INFER_PROFILE", "0")))
-        stage_times: dict[str, float] = {}
+        profile_enabled = os.getenv("OPENPI_INFER_PROFILE") not in (None, "", "0", "false", "False", "no")
 
-        # Copy + input transforms
+        total_t0 = time.monotonic()
+
+        # Copy inputs
         t0 = time.monotonic()
         inputs = jax.tree.map(lambda x: x, obs)
+        copy_input_ms = (time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
+
+        # Input transforms
+        t0 = time.monotonic()
         inputs = self._input_transform(inputs)
-        stage_times["input_ms"] = (time.monotonic() - t0) * 1000 if profile else 0.0
+        input_transform_ms = (time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
 
         # Batch & device move
+        t0 = time.monotonic()
         if not self._is_pytorch_model:
             inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
             self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
         else:
             inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], inputs)
             sample_rng_or_pytorch_device = self._pytorch_device
+        batch_to_device_ms = (time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
 
         # Prepare kwargs for sample_actions
         sample_kwargs = dict(self._sample_kwargs)
         if noise is not None:
-            noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
+            noise = (
+                torch.from_numpy(noise).to(self._pytorch_device)
+                if self._is_pytorch_model
+                else jnp.asarray(noise)
+            )
             if noise.ndim == 2:
                 noise = noise[None, ...]
             sample_kwargs["noise"] = noise
 
+        t0 = time.monotonic()
         observation = _model.Observation.from_dict(inputs)
+        observation_build_ms = (time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
 
-        # Optional: measure prefix embedding length/time (JAX models only)
-        prefix_len = None
-        if profile and not self._is_pytorch_model:
-            try:
-                # Run embed_prefix in eval mode to avoid ST path; minimal overhead for telemetry
-                model = self._model
-                model.eval()
-                t1 = time.monotonic()
-                prefix_tokens, prefix_mask, _ = model.embed_prefix(observation)
-                stage_times["prefix_ms"] = (time.monotonic() - t1) * 1000
-                prefix_len = int(prefix_tokens.shape[1])
-                # Original length (unpruned) and keep ratio
-                t1b = time.monotonic()
-                prefix_orig_len = int(model.estimate_original_prefix_len(observation))
-                stage_times["prefix_orig_ms"] = (time.monotonic() - t1b) * 1000
-                if prefix_orig_len > 0:
-                    stage_times["prefix_keep_ratio"] = prefix_len / float(prefix_orig_len)
-            except Exception:  # pragma: no cover
-                pass
+        # Model sampling (only normal inference timing)
+        # IMPORTANT: Avoid extra prefix computations during profiling to prevent large overhead.
+        # We intentionally skip any calls to estimate_original_prefix_len/embed_prefix here.
 
-        # Model sampling
+        # Core model forward (measure true device compute time)
         t2 = time.monotonic()
         outputs = {
             "state": inputs["state"],
             "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
         }
+        # Ensure device-side work is completed so infer_ms reflects GPU/TPU compute,
+        # not deferred into host_copy via implicit synchronization.
+        try:
+            if self._is_pytorch_model:
+                if torch.cuda.is_available() and str(self._pytorch_device).startswith("cuda"):
+                    torch.cuda.synchronize(torch.device(self._pytorch_device))
+            else:
+                # For JAX, block on the primary array(s) produced by the model.
+                _ = jax.tree.map(
+                    lambda x: x.block_until_ready() if hasattr(x, "block_until_ready") else x,
+                    outputs,
+                )
+        except Exception:
+            # Never let profiling sync interfere with inference
+            pass
         model_time = time.monotonic() - t2
 
         # Host copy
+        t0 = time.monotonic()
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
         else:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
+        host_copy_ms = (time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
 
-        # Output transforms
-        t3 = time.monotonic()
+        # Output transforms (no telemetry timing)
+        t0 = time.monotonic()
         outputs = self._output_transform(outputs)
-        stage_times["output_ms"] = (time.monotonic() - t3) * 1000 if profile else 0.0
+        output_transform_ms = (time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
 
         # Timing payload
         if profile_enabled:
@@ -149,19 +163,52 @@ class Policy(BasePolicy):
                 "output_transform_ms": output_transform_ms,
                 "total_ms": total_ms,
             }
+<<<<<<< HEAD
             # Keep policy timing minimal and generic; do not merge model-internal component timings
 
+=======
+>>>>>>> 6aa6e07 (• 新增 scripts/replay_dataset.py 脚本，用于将 LeRobot 数据集通过 WebSocket 送入策略服务并统计误差/时延；脚本包含 CLI)
             # Attach pruning overhead measured inside embed_prefix (no extra passes)
             try:
-                import pynvml  # type: ignore
-
-                pynvml.nvmlInit()
-                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                timing["gpu0_mem_mb"] = float(mem.used) / (1024 * 1024)
+                prune_enabled: bool | None = None
+                if hasattr(self._model, "token_pruning_enabled"):
+                    prune_enabled = bool(getattr(self._model, "token_pruning_enabled"))  # type: ignore[assignment]
+                profile_prune = os.getenv("OPENPI_PROFILE_PRUNE_OVERHEAD") not in (None, "", "0", "false", "False", "no")
+                if profile_prune and prune_enabled and (not self._is_pytorch_model):
+                    prune_overhead_ms = float(getattr(self._model, "_last_prune_overhead_ms", 0.0))
+                    timing["prune_overhead_ms"] = prune_overhead_ms
+                    timing["infer_wo_prune_ms"] = max(0.0, timing["infer_ms"] - prune_overhead_ms)
             except Exception:
                 pass
-        outputs["policy_timing"] = timing
+            # Attach lightweight token statistics without incurring heavy recompute.
+            # Compute after total_ms so their (small) overhead is not included in totals.
+            try:
+                if not self._is_pytorch_model and hasattr(self._model, "fast_prefix_stats"):
+                    stats = self._model.fast_prefix_stats(observation)  # type: ignore[attr-defined]
+                    # Only counts/ratios, no timing fields added.
+                    for k in ("prefix_orig_len", "prefix_len", "prefix_keep_ratio"):
+                        if k in stats:
+                            timing[k] = float(stats[k])
+            except Exception:
+                pass
+            # Attach pruning diagnostics only when pruning is enabled
+            # Requirement: when pruning is OFF, we should not display pruning info.
+            try:
+                prune_enabled: bool | None = None
+                if hasattr(self._model, "token_pruning_enabled"):
+                    prune_enabled = bool(getattr(self._model, "token_pruning_enabled"))  # type: ignore[assignment]
+                if prune_enabled:
+                    timing["prune_enabled"] = True
+                    if hasattr(self._model, "token_prune_ratio"):
+                        # normalize to float in [0,1], but avoid crashing on unexpected types
+                        ratio = float(getattr(self._model, "token_prune_ratio"))  # type: ignore[arg-type]
+                        timing["prune_ratio"] = max(0.0, min(1.0, ratio))
+            except Exception:
+                # Do not let diagnostics break inference
+                pass
+            outputs["policy_timing"] = timing
+        else:
+            outputs["policy_timing"] = {"infer_ms": model_time * 1000.0}
         return outputs
 
     @property
@@ -190,5 +237,8 @@ class PolicyRecorder(_base_policy.BasePolicy):
         output_path = self._record_dir / f"step_{self._record_step}"
         self._record_step += 1
 
-        np.save(output_path, np.asarray(data))
+        # Persist as a 0-d object array so np.load(..., allow_pickle=True).item() returns the dict
+        obj = np.empty((), dtype=object)
+        obj[()] = data
+        np.save(output_path, obj, allow_pickle=True)
         return results

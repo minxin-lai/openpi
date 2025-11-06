@@ -694,7 +694,7 @@ _CONFIGS = [
     ),
     # Example: pi05 + LoRA + LightVLA-style token pruning on a local ALOHA dataset
     TrainConfig(
-        name="pi05_aloha_mobile_dummy_lora_pruned",
+        name="pi05_pick_place_lora_pruned_with_lightvla",
         model=pi0_config.Pi0Config(
             pi05=True,
             paligemma_variant="gemma_2b_lora",
@@ -703,11 +703,29 @@ _CONFIGS = [
             token_prune_ratio=0.25,
         ),
         data=LeRobotAlohaDataConfig(
-            # Point this to your local LeRobot dataset path
-            repo_id="/home/laiminxin/dataset/aloha_mobile_dummy",
+            # Point this to your local LeRobot dataset ID (not the raw HDF5 path)
+            repo_id="local/agilex_pick_place_1022",
             default_prompt="perform the mobile task",
             adapt_to_pi=True,
             use_delta_joint_actions=True,
+            # Override repack to match converter's camera keys
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                # Provide only the cameras present in your converted dataset.
+                                # Missing cameras are handled later by AlohaInputs.
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
         ),
         # Load pi0.5 base checkpoint and only train LoRA params
         weight_loader=weight_loaders.CheckpointWeightLoader("/home/laiminxin/pi05_base/params"),
@@ -718,10 +736,246 @@ _CONFIGS = [
         ).get_freeze_filter(),
         ema_decay=None,
         num_train_steps=20_000,
-        batch_size=32,
+        batch_size=16,
         save_interval=1000,
         log_interval=100,
     ),
+    # Example: pi05 + LoRA + LightVLA-style token pruning (75% kept) for comparison
+    TrainConfig(
+        name="pi05_pick_place_lora_pruned_75pct",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            token_pruning_enabled=True,
+            token_prune_ratio=0.75,  # Keep 75% of visual tokens (vs 25% in original config)
+        ),
+        data=LeRobotAlohaDataConfig(
+            # Point this to your local LeRobot dataset ID (not the raw HDF5 path)
+            repo_id="local/agilex_pick_place_1022",
+            default_prompt="perform the mobile task",
+            adapt_to_pi=True,
+            use_delta_joint_actions=True,
+            # Reuse norm stats from the 25% config
+            assets=AssetsConfig(
+                assets_dir="./assets/pi05_pick_place_lora_pruned_with_lightvla",
+                asset_id="local/agilex_pick_place_1022",
+            ),
+            # Override repack to match converter's camera keys
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                # Provide only the cameras present in your converted dataset.
+                                # Missing cameras are handled later by AlohaInputs.
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        # Load pi0.5 base checkpoint and only train LoRA params
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/laiminxin/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=20_000,
+        batch_size=16,
+        save_interval=1000,
+        log_interval=100,
+    ),
+    # Example: pi05 + LoRA + pruning with new dataset "without_any"
+    TrainConfig(
+        name="pi05_without_any_lora_pruned_25pct",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            token_pruning_enabled=True,
+            token_prune_ratio=0.25,  # Keep 25% of visual tokens
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="local/without_any",
+            default_prompt="perform the mobile task",
+            adapt_to_pi=True,
+            use_delta_joint_actions=True,
+            # Override repack to match converter's camera keys
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        # Load pi0.5 base checkpoint and only train LoRA params
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/laiminxin/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=20_000,
+        batch_size=16,
+        save_interval=1000,
+        log_interval=100,
+    ),
+    TrainConfig(
+        name="pi05_without_any_lora_pruned_75pct",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            token_pruning_enabled=True,
+            token_prune_ratio=0.75,  # Keep 75% of visual tokens
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="local/without_any",
+            default_prompt="perform the mobile task",
+            adapt_to_pi=True,
+            use_delta_joint_actions=True,
+            # Override repack to match converter's camera keys
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        # Load pi0.5 base checkpoint and only train LoRA params
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/laiminxin/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=20_000,
+        batch_size=16,
+        save_interval=1000,
+        log_interval=100,
+    ),
+
+TrainConfig(
+        name="pi05_pick_place",      # 为你的任务设置一个唯一名称        
+        model=pi0_config.Pi0Config(pi05=True),  
+        data=LeRobotAlohaDataConfig(
+            repo_id="local/with_actio",  # 你转换后的数据集名称
+            assets=AssetsConfig(
+                assets_dir="/home/laiminxin/pi05_base/assets",
+                asset_id="trossen",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            adapt_to_pi=False,
+            # 例如："拿起杯子"
+            default_prompt="""Dual-arm pick-and-place (L=BLACK, R=WHITE)
+                            Perception: cam_high global search with left/right ROIs → wrist cams for fine alignment (<10 cm)
+                            Gripper: (OPEN=0.08, CLOSE=0.0)
+                            Place: upright to LeftBin / RightBin within ±10 mm, yaw ±5°; release → retreat +10 cm → standby
+                            Fallback: on loss or predicted collision, stagger L then R; abort after 3 failed grasps
+                            Success: both cans placed within tolerance; no slip/collision; both arms at standby""", 
+            # 根据你的数据集结构定义重包装转换
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action"
+                        }
+                    )
+                ]
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/laiminxin/pi05_base/params"),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+        num_train_steps=20000,
+        batch_size=16,
+        save_interval=3000,
+        # 可选：首次调试时关掉 wandb 以免认证问题
+        wandb_enabled=True,
+    ),
+
+
+    # Inference config for pi05_pick_place checkpoint (no LoRA, no training params)
+    TrainConfig(
+        name="pi05_pick_place_inference",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            # Uses default variants: gemma_2b and gemma_300m (no LoRA)
+            token_pruning_enabled=False,
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="/home/shiweikai/.cache/lerobot/local/can_36position/",
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets",
+                asset_id="trossen",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            adapt_to_pi=False,
+            default_prompt="""Dual-arm pick-and-place (L=BLACK, R=WHITE)
+                            Perception: cam_high global search with left/right ROIs → wrist cams for fine alignment (<10 cm)
+                            Gripper: (OPEN=0.08, CLOSE=0.0)
+                            Place: upright to LeftBin / RightBin within ±10 mm, yaw ±5°; release → retreat +10 cm → standby
+                            Fallback: on loss or predicted collision, stagger L then R; abort after 3 failed grasps
+                            Success: both cans placed within tolerance; no slip/collision; both arms at standby""",
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action"
+                        }
+                    )
+                ]
+            ),
+        ),
+        # No weight_loader - checkpoint will be loaded directly via --policy.dir
+        # No freeze_filter - not needed for inference
+        # Training params (num_train_steps, batch_size, etc.) use defaults
+    ),
+
     # Example: pi05 + LoRA + pruning with LeRobot-converted ALOHA dataset (repo_id under LEROBOT_HOME)
     TrainConfig(
         name="pi05_aloha_mobile_lerobot_lora_pruned",

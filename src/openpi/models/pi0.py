@@ -1,4 +1,6 @@
 import logging
+import os
+import time
 
 import einops
 import flax.nnx as nnx
@@ -73,6 +75,9 @@ class Pi0(_model.BaseModel):
         self.token_prune_tau = getattr(config, "token_prune_tau", 1.0)
         self.token_prune_min_keep = getattr(config, "token_prune_min_keep", 1)
         self.token_prune_noise_scale = getattr(config, "token_prune_noise_scale", 0.0)
+        self.token_prune_scoring = getattr(config, "token_prune_scoring", "prompt_attn")
+        # Profiling: store last measured pruning overhead (ms) for telemetry
+        self._last_prune_overhead_ms: float = 0.0
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -84,10 +89,13 @@ class Pi0(_model.BaseModel):
             )
         )
         llm.lazy_init(rngs=rngs, method="init", use_adarms=[False, True] if config.pi05 else [False, False])
+        # Image encoder (SigLIP). Keep track of patch size for fast token estimates.
+        siglip_variant = "So400m/14"
+        self._siglip_patch_size = _siglip.decode_variant(siglip_variant)["patch_size"]  # (ph, pw)
         img = nnx_bridge.ToNNX(
             _siglip.Module(
                 num_classes=paligemma_config.width,
-                variant="So400m/14",
+                variant=siglip_variant,
                 pool_type="none",
                 scan=True,
                 dtype_mm=config.dtype,
@@ -108,10 +116,63 @@ class Pi0(_model.BaseModel):
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
 
+    def fast_prefix_stats(self, obs: _model.Observation) -> dict:
+        """Fast, zero-forward token statistics for prefix.
+
+        Computes the original (unpruned) and estimated pruned prefix token lengths using
+        only tensor shapes and configured patch/pruning parameters.
+
+        Returns a dict with keys:
+          - prefix_orig_len: int
+          - prefix_len: int (accounts for pruning if enabled)
+          - prefix_keep_ratio: float in [0,1]
+        """
+        # Image tokens per camera: (H // ph) * (W // pw)
+        ph, pw = self._siglip_patch_size
+        orig_img_tokens_total = 0
+        for name, img in obs.images.items():
+            # Expect shape [B, H, W, C]; compute tokens per image for the first (and only) batch element.
+            _, H, W, _ = img.shape
+            tokens = int((H // ph) * (W // pw))
+            orig_img_tokens_total += tokens
+
+        # Text tokens length equals the sequence length dimension (no need to run embed).
+        text_tokens = 0
+        if obs.tokenized_prompt is not None:
+            text_tokens = int(obs.tokenized_prompt.shape[1])
+
+        prefix_orig_len = int(orig_img_tokens_total + text_tokens)
+
+        # Apply pruning estimate per camera deterministically, language tokens are kept.
+        if getattr(self, "token_pruning_enabled", False):
+            pr = float(getattr(self, "token_prune_ratio", 1.0))
+            min_keep = int(getattr(self, "token_prune_min_keep", 1))
+            pruned_img_total = 0
+            for name, img in obs.images.items():
+                _, H, W, _ = img.shape
+                s = int((H // ph) * (W // pw))
+                k = max(min_keep, int(s * pr))
+                pruned_img_total += k
+            prefix_len = int(pruned_img_total + text_tokens)
+        else:
+            prefix_len = int(prefix_orig_len)
+
+        keep = float(prefix_len) / float(prefix_orig_len) if prefix_orig_len > 0 else 0.0
+        return {
+            "prefix_orig_len": prefix_orig_len,
+            "prefix_len": prefix_len,
+            "prefix_keep_ratio": keep,
+        }
+
     @at.typecheck
     def embed_prefix(
-        self, obs: _model.Observation
+        self, obs: _model.Observation, rng: at.KeyArrayLike | None = None
     ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Bool[at.Array, " s"]]:
+        # Determine whether to profile pruning overhead (best-effort, inference-only)
+        def _truthy(x: str | None) -> bool:
+            return x is not None and x.lower() not in ("", "0", "false", "no", "off")
+        profile_overhead = _truthy(os.getenv("OPENPI_INFER_PROFILE")) and _truthy(os.getenv("OPENPI_PROFILE_PRUNE_OVERHEAD"))
+        prune_overhead_accum = 0.0
         input_mask = []
         ar_mask: list[bool] = []
         tokens_out = []
@@ -143,7 +204,7 @@ class Pi0(_model.BaseModel):
             x = x * jax.lax.rsqrt(var + eps)
             return x.astype(dtype)
 
-        def _prune_tokens(patches, mask, prompt):
+        def _prune_tokens(patches, mask, prompt, rng_local: at.KeyArrayLike | None):
             # patches: [b, s, d], mask: [b, s], prompt: [b, t, d] | None
             # Returns selected patches [b, k, d] and mask [b, k]
             s = patches.shape[1]
@@ -151,8 +212,25 @@ class Pi0(_model.BaseModel):
 
             # Prompt-guided similarity, fallback to L2 norm
             if prompt is not None:
-                prompt_mean = jnp.mean(prompt, axis=1)
-                score = jnp.einsum("bsd,bd->bs", _rms_norm(patches), _rms_norm(prompt_mean))
+                mode = self.token_prune_scoring
+                if mode == "prompt_attn":
+                    # LightVLA-style attention scoring: attend from patches to prompt tokens
+                    patches_n = _rms_norm(patches)
+                    prompts_n = _rms_norm(prompt)
+                    d = patches_n.shape[-1]
+                    # attn weights over prompt tokens per patch
+                    logits = jnp.einsum("bsd,btd->bst", patches_n, prompts_n) / jnp.sqrt(jnp.asarray(d, dtype=patches_n.dtype))
+                    attn = jax.nn.softmax(logits, axis=-1)
+                    # aggregated prompt features per patch
+                    q = jnp.einsum("bst,btd->bsd", attn, prompts_n)
+                    q = _rms_norm(q)
+                    score = jnp.einsum("bsd,bsd->bs", q, patches_n) / jnp.sqrt(jnp.asarray(d, dtype=patches_n.dtype))
+                elif mode == "prompt_mean":
+                    prompt_mean = jnp.mean(prompt, axis=1)
+                    score = jnp.einsum("bsd,bd->bs", _rms_norm(patches), _rms_norm(prompt_mean))
+                else:
+                    # Fallback to L2 norm
+                    score = jnp.linalg.norm(patches, axis=-1)
             else:
                 score = jnp.linalg.norm(patches, axis=-1)
 
@@ -161,9 +239,16 @@ class Pi0(_model.BaseModel):
             # Users can emulate noise by data augmentation upstream.
             train_mode = not self.deterministic
             if train_mode and self.token_prune_noise_scale > 0.0:
-                # Deterministic pseudo-noise from content: project to mean as a proxy.
-                noise = jnp.tanh(score)
-                score = score + self.token_prune_noise_scale * noise
+                # Add (optional) Gumbel noise for exploration during training when RNG is provided.
+                # Falls back to deterministic pseudo-noise if RNG is None.
+                if rng_local is not None:
+                    u = jax.random.uniform(rng_local, shape=score.shape, minval=0.0, maxval=1.0, dtype=jnp.float32)
+                    # Standard Gumbel(0, 1)
+                    gumbel = -jnp.log(-jnp.log(jnp.clip(u, 1e-6, 1.0 - 1e-6)))
+                    score = score + self.token_prune_noise_scale * gumbel
+                else:
+                    noise = jnp.tanh(score)
+                    score = score + self.token_prune_noise_scale * noise
 
             # Hard Top-K indices (deterministic)
             idx = jnp.argsort(score, axis=1)[:, -k:]
@@ -185,8 +270,22 @@ class Pi0(_model.BaseModel):
 
         # Apply pruning per camera if enabled
         if self.token_pruning_enabled:
-            for patches, mask in zip(image_tokens_list, image_masks_list, strict=True):
-                pruned_patches, pruned_mask = _prune_tokens(patches, mask, prompt_embed)
+            # Split RNG per camera stream if provided.
+            keys = None
+            if rng is not None:
+                keys = jax.random.split(rng, len(image_tokens_list))
+            for i, (patches, mask) in enumerate(zip(image_tokens_list, image_masks_list, strict=True)):
+                if profile_overhead:
+                    t_prof = time.monotonic()
+                pruned_patches, pruned_mask = _prune_tokens(patches, mask, prompt_embed, None if keys is None else keys[i])
+                # Block on device to get accurate timing of pruning compute only
+                if profile_overhead:
+                    try:
+                        _ = pruned_patches.block_until_ready() if hasattr(pruned_patches, "block_until_ready") else pruned_patches
+                        _ = pruned_mask.block_until_ready() if hasattr(pruned_mask, "block_until_ready") else pruned_mask
+                    except Exception:
+                        pass
+                    prune_overhead_accum += (time.monotonic() - t_prof)
                 tokens_out.append(pruned_patches)
                 input_mask.append(pruned_mask)
                 ar_mask += [False] * pruned_patches.shape[1]
@@ -205,7 +304,28 @@ class Pi0(_model.BaseModel):
         tokens = jnp.concatenate(tokens_out, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
+        # Store measured prune overhead (ms) for telemetry consumers
+        try:
+            self._last_prune_overhead_ms = float(prune_overhead_accum * 1000.0) if profile_overhead and self.token_pruning_enabled else 0.0
+        except Exception:
+            self._last_prune_overhead_ms = 0.0
         return tokens, input_mask, ar_mask
+
+    def pruning_summary(self, obs: _model.Observation, rng: at.KeyArrayLike | None = None) -> dict:
+        """
+        Returns a summary dict with original vs pruned prefix token lengths.
+        Useful for training/inference monitoring of LightVLA-style pruning.
+
+        Keys:
+          - original_prefix_len: int
+          - pruned_prefix_len: int
+          - reduction: float (fractional reduction >= 0)
+        """
+        original = self.estimate_original_prefix_len(obs)
+        tokens, mask, _ = self.embed_prefix(obs, rng=rng)
+        pruned = int(tokens.shape[1])
+        reduce = float(original - pruned) / float(original) if original > 0 else 0.0
+        return {"original_prefix_len": int(original), "pruned_prefix_len": pruned, "reduction": reduce}
 
     def estimate_original_prefix_len(self, obs: _model.Observation) -> int:
         """Estimate original (unpruned) prefix token length for telemetry.
@@ -277,7 +397,7 @@ class Pi0(_model.BaseModel):
     def compute_loss(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
     ) -> at.Float[at.Array, "*b ah"]:
-        preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
+        preprocess_rng, noise_rng, time_rng, prune_rng = jax.random.split(rng, 4)
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
 
         batch_shape = actions.shape[:-2]
@@ -288,7 +408,7 @@ class Pi0(_model.BaseModel):
         u_t = noise - actions
 
         # one big forward pass of prefix + suffix at once
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation, rng=prune_rng)
         suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
         input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
         ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
