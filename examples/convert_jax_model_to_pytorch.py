@@ -522,7 +522,9 @@ def convert_pi0_checkpoint(
     if precision == "float32":
         pi0_model = pi0_model.to(torch.float32)
     elif precision == "bfloat16":
-        pi0_model = pi0_model.to(torch.bfloat16)
+        # Model already has correct mixed precision from __init__
+        # Don't override with .to(bfloat16) as it would convert normalization layers
+        pass
     else:
         raise ValueError(f"Invalid precision: {precision}")
 
@@ -533,12 +535,15 @@ def convert_pi0_checkpoint(
     safetensors.torch.save_model(pi0_model, os.path.join(output_path, "model.safetensors"))
 
     # Copy assets folder if it exists
-    assets_source = pathlib.Path(checkpoint_dir).parent / "assets"
+    assets_source = pathlib.Path(checkpoint_dir) / "assets"
     if assets_source.exists():
         assets_dest = pathlib.Path(output_path) / "assets"
         if assets_dest.exists():
             shutil.rmtree(assets_dest)
         shutil.copytree(assets_source, assets_dest)
+        print(f"Assets copied from {assets_source} to {assets_dest}")
+    else:
+        print(f"Warning: Assets not found at {assets_source}, skipping copy")
 
     # Save config as JSON for reference
     config_dict = {
