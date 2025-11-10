@@ -163,6 +163,8 @@ class Policy(BasePolicy):
                 "output_transform_ms": output_transform_ms,
                 "total_ms": total_ms,
             }
+            # Keep policy timing minimal and generic; do not merge model-internal component timings
+
             # Attach pruning overhead measured inside embed_prefix (no extra passes)
             try:
                 prune_enabled: bool | None = None
