@@ -134,19 +134,24 @@ class Policy(BasePolicy):
         stage_times["output_ms"] = (time.monotonic() - t3) * 1000 if profile else 0.0
 
         # Timing payload
-        timing = {"infer_ms": model_time * 1000}
-        if profile:
-            # include non-zero numeric values
-            for k, v in stage_times.items():
-                try:
-                    fv = float(v)
-                except Exception:
-                    continue
-                if fv:
-                    timing[k] = fv
-            if prefix_len is not None:
-                timing["prefix_len"] = float(prefix_len)
-            # Optional: GPU0 memory via NVML
+        if profile_enabled:
+            # Measure core total first so any extra lightweight diagnostics can be excluded from totals.
+            total_ms = (time.monotonic() - total_t0) * 1000.0
+            timing: dict[str, float] = {
+                # Backward-compatible overall model call latency
+                "infer_ms": model_time * 1000.0,
+                # Detailed breakdown
+                "copy_input_ms": copy_input_ms,
+                "input_transform_ms": input_transform_ms,
+                "batch_to_device_ms": batch_to_device_ms,
+                "observation_build_ms": observation_build_ms,
+                "host_copy_ms": host_copy_ms,
+                "output_transform_ms": output_transform_ms,
+                "total_ms": total_ms,
+            }
+            # Keep policy timing minimal and generic; do not merge model-internal component timings
+
+            # Attach pruning overhead measured inside embed_prefix (no extra passes)
             try:
                 import pynvml  # type: ignore
 
