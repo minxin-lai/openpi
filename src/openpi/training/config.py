@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.yuanluo_policy as yuanluo_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -452,6 +453,69 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
         )
 
+@dataclasses.dataclass(frozen=True)
+class LeRobotYuanluoDataConfig(DataConfigFactory):
+    """
+    Data config for the custom Yuanluo dataset.
+    """
+
+    # Actions are absolute values, so no extra delta transform is needed.
+    extra_delta_transform: bool = False
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        ##lerobot
+                        "observation.images.head_camera": "observation.images.head_camera",
+                        "observation.images.wrist_left_camera": "observation.images.wrist_left_camera",
+                        "observation.images.gelsight_left": "observation.images.gelsight_left",
+                        # "observation/gelsight_right": "leftarm_gelsight_right",
+                        # "observation/left_wrench": "left_wrench",
+                        "observation.state": "observation.state",
+                        "action": "action",
+                        "prompt": "task",
+                        
+                        ##tpy dataset
+                        # "observation/front_camera": "observation.images.front",
+                        # "observation/left_wrist_camera": "observation.images.left_wrist",
+                        # "observation/gelsight_left": "observation.images.gelsight_left",
+                        # # "observation/gelsight_right": "leftarm_gelsight_right",
+                        # # "observation/left_wrench": "left_wrench",
+                        # "observation/left_state": "observation.state",
+                        # "actions": "action",
+                        # # "prompt": "task",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[yuanluo_policy.YuanluoInputs(model_type=model_config.model_type)],
+            outputs=[yuanluo_policy.YuanluoOutputs()],
+        )
+
+        # LIBERO already represents actions as deltas, but we have some old Pi0 checkpoints that are trained with this
+        # extra delta transform.
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=("action",),
+        )
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
@@ -622,6 +686,26 @@ _CONFIGS = [
             ),
         ),
     ),
+
+    TrainConfig(
+        name="pi0_yuanluo_delta",
+        model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora", action_horizon=32), # 7 for end_pose + 1 for gripper_state
+        data=LeRobotYuanluoDataConfig(
+            repo_id="llly/usbinsert_v2_10_28", 
+            extra_delta_transform=True, # Yuanluo actions are absolute
+        ),
+        #weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("./checkpoints/pi0_base/params"),
+        num_train_steps=30_000, # Default to 30k steps, adjust as needed
+        # fsdp_devices=2, # Enable FSDP to reduce memory usage The fsdp_devices parameter was set to 2 to enable Fully Sharded Data Parallel, which helps reduce memory usage by sharding model parameters across devices
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+        batch_size=8,
+    ),
+
+
     TrainConfig(
         name="pi05_droid",
         model=pi0_config.Pi0Config(action_horizon=15, pi05=True),
