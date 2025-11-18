@@ -22,6 +22,52 @@ from openpi.shared import nnx_utils
 BasePolicy: TypeAlias = _base_policy.BasePolicy
 
 
+def _summarize_array(arr: Any, *, max_elems: int = 8) -> dict[str, Any]:
+    """Lightweight summary of a NumPy/JAX/Torch array for alignment debugging."""
+    try:
+        if isinstance(arr, torch.Tensor):
+            a = arr.detach().cpu().numpy()
+        else:
+            a = np.asarray(arr)
+    except Exception:
+        return {"repr": repr(arr)}
+
+    flat = a.reshape(-1) if a.size else a
+    return {
+        "shape": tuple(a.shape),
+        "dtype": str(a.dtype),
+        "min": float(a.min()) if a.size else 0.0,
+        "max": float(a.max()) if a.size else 0.0,
+        "first": flat[:max_elems].tolist(),
+    }
+
+
+def _log_alignment_snapshot(tag: str, data: dict[str, Any]) -> None:
+    """Log a small, comparable snapshot of key tensors for JAX/PyTorch alignment."""
+    if os.getenv("OPENPI_ALIGN_DEBUG") in (None, "", "0", "false", "False", "no"):
+        return
+
+    try:
+        state = data.get("state", None)
+        actions = data.get("actions", None)
+        image = data.get("image", None)
+
+        payload: dict[str, Any] = {}
+        if state is not None:
+            payload["state"] = _summarize_array(state)
+        if actions is not None:
+            payload["actions"] = _summarize_array(actions)
+        if isinstance(image, dict):
+            for cam in ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"):
+                if cam in image:
+                    payload.setdefault("image", {})[cam] = _summarize_array(image[cam])
+
+        logging.info("[ALIGN][%s] %s", tag, payload)
+    except Exception:
+        # Never let debug logging break inference.
+        logging.exception("Failed to log alignment snapshot for tag=%s", tag)
+
+
 class Policy(BasePolicy):
     def __init__(
         self,
@@ -76,10 +122,16 @@ class Policy(BasePolicy):
         inputs = jax.tree.map(lambda x: x, obs)
         copy_input_ms = (time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
 
+        # Debug: log raw observation before any transforms (for alignment with realtime-vla).
+        _log_alignment_snapshot("jax_pre_obs", {"state": inputs.get("state"), "image": inputs.get("image")})
+
         # Input transforms
         t0 = time.monotonic()
         inputs = self._input_transform(inputs)
         input_transform_ms = (time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
+
+        # Debug: log after all configured input transforms (YuanluoInputs + Normalize + Resize + Pad).
+        _log_alignment_snapshot("jax_post_input_transform", inputs)
 
         # Batch & device move
         t0 = time.monotonic()
@@ -134,6 +186,9 @@ class Policy(BasePolicy):
             pass
         model_time = time.monotonic() - t2
 
+        # Debug: log model outputs in normalized space (before Unnormalize/outputs transforms).
+        _log_alignment_snapshot("jax_model_out_normalized", outputs)
+
         # Host copy
         t0 = time.monotonic()
         if self._is_pytorch_model:
@@ -146,6 +201,9 @@ class Policy(BasePolicy):
         t0 = time.monotonic()
         outputs = self._output_transform(outputs)
         output_transform_ms = (time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
+
+        # Debug: log final outputs after Unnormalize + env-specific output transforms.
+        _log_alignment_snapshot("jax_post_output_transform", outputs)
 
         # Timing payload
         if profile_enabled:

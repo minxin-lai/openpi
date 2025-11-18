@@ -42,10 +42,27 @@ class RealtimeVLA:
 
     This wraps third_party/realtime-vla's Pi0Inference into a BasePolicy-like
     object. Inputs should include Yuanluo-style observation keys or raw images/state.
+
+    To closely match the original JAX pi0_yuanluo_delta inference pipeline, we
+    apply the same Yuanluo input/output transforms and dataset normalization
+    around the realtime-vla engine:
+      - Inputs are repacked, converted via YuanluoInputs, normalized using the
+        checkpoint/dataset norm_stats, resized to 224x224, and state is padded
+        to the model action_dim.
+      - Outputs are unnormalized and passed through YuanluoOutputs so that the
+        returned actions match the JAX policy server convention.
+
+    The realtime-vla engine itself always sees normalized images/state; we do
+    not modify the model or weights, only the surrounding data transforms.
     """
 
     # Path to converted_checkpoint.pkl produced by convert_from_jax.py
     checkpoint_pkl: str
+    # Optional path to the original JAX checkpoint directory (e.g. .../29999).
+    # When provided, we load norm_stats from <jax_checkpoint_dir>/assets/<asset_id>
+    # to exactly match the JAX inference normalization. If not provided, we
+    # fall back to the dataset assets specified in the train config.
+    jax_checkpoint_dir: str | None = None
     # Number of camera views (1-3)
     num_views: int = 2
     # Trajectory length for diffusion
@@ -127,8 +144,15 @@ def create_policy(args: Args) -> _policy.Policy:
             import sys
             import pickle
             from pathlib import Path as _Path
+            import pathlib as _pathlib
             import numpy as _np
             import torch as _torch
+
+            from openpi.policies.policy import _log_alignment_snapshot as _log_align  # type: ignore
+            import openpi.transforms as _transforms
+            from openpi.training import checkpoints as _checkpoints
+            from openpi.training import config as _train_config_mod
+            from openpi.policies import yuanluo_policy as _yuanluo_policy
 
             # Add third_party/realtime-vla to path
             repo_root = _Path(__file__).resolve().parents[1]
@@ -143,15 +167,76 @@ def create_policy(args: Args) -> _policy.Policy:
             if args.policy.device.startswith("cuda") and not _torch.cuda.is_available():
                 raise RuntimeError("CUDA device requested but not available for realtime-vla policy")
 
+            # Build Yuanluo config + normalization so that inputs/outputs
+            # are transformed in the same way as the JAX pi0_yuanluo_delta
+            # policy server.
+            yuanluo_config = _train_config_mod.get_config("pi0_yuanluo_realtime")
+            data_config = yuanluo_config.data.create(yuanluo_config.assets_dirs, yuanluo_config.model)
+
+            asset_id = data_config.asset_id
+            norm_stats = data_config.norm_stats
+            use_quantiles = data_config.use_quantile_norm
+
+            # Prefer checkpoint-local norm_stats if JAX checkpoint dir is given,
+            # matching create_trained_policy's behavior for JAX inference.
+            if args.policy.jax_checkpoint_dir is not None and asset_id is not None:
+                assets_dir = _pathlib.Path(args.policy.jax_checkpoint_dir).expanduser().resolve() / "assets"
+                try:
+                    norm_stats = _checkpoints.load_norm_stats(assets_dir, asset_id)
+                    logging.info(
+                        "Loaded norm stats for realtime-vla from JAX checkpoint assets: %s (asset_id=%s)",
+                        assets_dir,
+                        asset_id,
+                    )
+                except Exception:
+                    logging.exception(
+                        "Failed to load norm stats from JAX checkpoint assets at %s; "
+                        "falling back to config assets for realtime-vla.",
+                        assets_dir,
+                    )
+
+            # Construct the exact Yuanluo input/output transforms we need around
+            # the realtime-vla engine. We reuse the same components as the JAX
+            # pipeline, but only for observation and action tensors (no prompt
+            # tokenization is needed here).
+            yuanluo_inputs = _yuanluo_policy.YuanluoInputs(model_type=yuanluo_config.model.model_type)
+            yuanluo_outputs = _yuanluo_policy.YuanluoOutputs()
+            normalize = _transforms.Normalize(norm_stats, use_quantiles=use_quantiles)
+            unnormalize = _transforms.Unnormalize(norm_stats, use_quantiles=use_quantiles)
+            resize = _transforms.ResizeImages(224, 224)
+            pad_state = _transforms.PadStatesAndActions(yuanluo_config.model.action_dim)
+
+            # Full Yuanluo output pipeline as used in JAX:
+            # this may include AbsoluteActions (delta->absolute) followed by YuanluoOutputs.
+            data_output_transforms = list(data_config.data_transforms.outputs)
+
             engine = Pi0Inference(checkpoint, num_views=args.policy.num_views, chunk_size=args.policy.chunk_size)
 
             class _RealtimeVLAPolicy:
                 # Minimal BasePolicy-compatible wrapper
-                def __init__(self, engine, num_views: int, chunk_size: int, device: str):
+                def __init__(
+                    self,
+                    engine,
+                    num_views: int,
+                    chunk_size: int,
+                    device: str,
+                    yuanluo_inputs,
+                    normalize,
+                    resize,
+                    pad_state,
+                    unnormalize,
+                    data_output_transforms,
+                ):
                     self._engine = engine
                     self._num_views = num_views
                     self._chunk_size = chunk_size
                     self._device = device
+                    self._yuanluo_inputs = yuanluo_inputs
+                    self._normalize = normalize
+                    self._resize = resize
+                    self._pad_state = pad_state
+                    self._unnormalize = unnormalize
+                    self._data_output_transforms = data_output_transforms
                     self.metadata = {
                         "name": "realtime-vla-pi0",
                         "num_views": num_views,
@@ -179,48 +264,9 @@ def create_policy(args: Args) -> _policy.Policy:
                     return t
 
                 def _gather_images(self, obs: dict) -> _torch.Tensor:
-                    # Try Yuanluo-style keys first
-                    keys = [
-                        "observation.images.head_camera",
-                        "observation.images.wrist_left_camera",
-                        "observation.images.gelsight_left",
-                    ]
-                    imgs = []
-                    for k in keys:
-                        if k in obs:
-                            imgs.append(self._to_bf16_cuda_image(obs[k]))
-                    # Fallbacks: a list/array of images
-                    if len(imgs) == 0 and "images" in obs:
-                        arr = obs["images"]
-                        if isinstance(arr, _np.ndarray):
-                            if arr.ndim == 4 and arr.shape[-1] == 3:
-                                for i in range(min(self._num_views, arr.shape[0])):
-                                    imgs.append(self._to_bf16_cuda_image(arr[i]))
-                            elif arr.ndim == 4 and arr.shape[1] == 3:
-                                for i in range(min(self._num_views, arr.shape[0])):
-                                    imgs.append(self._to_bf16_cuda_image(arr[i]))
-                        elif isinstance(arr, (list, tuple)):
-                            for i in range(min(self._num_views, len(arr))):
-                                imgs.append(self._to_bf16_cuda_image(arr[i]))
-                    if len(imgs) < self._num_views:
-                        # Pad with zeros if fewer views provided
-                        pad = self._num_views - len(imgs)
-                        zero = _torch.zeros(224, 224, 3, dtype=_torch.bfloat16, device=self._device)
-                        imgs.extend([zero] * pad)
-                    return _torch.stack(imgs[: self._num_views], dim=0)
-
-                def _get_state(self, obs: dict) -> _torch.Tensor:
-                    for k in ("observation.state", "state"):
-                        if k in obs:
-                            st = obs[k]
-                            t = _torch.from_numpy(_np.array(st)) if not isinstance(st, _torch.Tensor) else st
-                            t = t.to(self._device)
-                            if t.numel() < 32:
-                                t = _torch.nn.functional.pad(t.flatten(), (0, 32 - t.numel()))
-                            elif t.numel() > 32:
-                                t = t.flatten()[:32]
-                            return t.to(_torch.bfloat16)
-                    return _torch.zeros(32, dtype=_torch.bfloat16, device=self._device)
+                    # This helper is no longer used as we now mirror the JAX
+                    # Yuanluo + Normalize transforms before calling the engine.
+                    raise RuntimeError("_gather_images should not be called directly")
 
                 def infer(self, obs: dict) -> dict:
                     import time as _time
@@ -229,9 +275,53 @@ def create_policy(args: Args) -> _policy.Policy:
 
                     total_t0 = _time.monotonic()
 
+                    # Debug: raw observation from websocket (Yuanluo-style keys).
+                    _state_raw = obs["observation.state"] if "observation.state" in obs else obs.get("state")
+                    _log_align(
+                        "rt_pre_obs",
+                        {
+                            "state": _state_raw,
+                            # Images are still nested under observation.images.* at this point.
+                        },
+                    )
+
                     t0 = _time.monotonic()
-                    images = self._gather_images(obs)
-                    state = self._get_state(obs)
+                    # Reuse the same Yuanluo + normalization pipeline as the JAX
+                    # pi0_yuanluo_delta server, but evaluate it in NumPy. This
+                    # yields normalized images/state that match the JAX model
+                    # inputs before we hand them to the realtime-vla engine.
+                    # For inference, the websocket obs is already using the
+                    # Yuanluo-style keys (see LeRobotYuanluoDataConfig and
+                    # infer_pytorch_pi0.py), so we skip the dataset-only repack
+                    # transforms and go straight into YuanluoInputs.
+                    inputs = self._yuanluo_inputs(obs)
+                    inputs = self._normalize(inputs)
+                    inputs = self._resize(inputs)
+                    inputs = self._pad_state(inputs)
+
+                    # Debug: after YuanluoInputs + Normalize + Resize + Pad.
+                    _log_align("rt_post_input_transform", inputs)
+
+                    # Extract normalized images/state in the same order used by
+                    # YuanluoInputs: [base_0_rgb, left_wrist_0_rgb]. We keep the
+                    # state as NumPy for later unnormalization.
+                    img_dict = inputs["image"]
+                    state_np = _np.asarray(inputs["state"], dtype=_np.float32)
+
+                    imgs_np = []
+                    for cam_key in ("base_0_rgb", "left_wrist_0_rgb"):
+                        if cam_key in img_dict:
+                            imgs_np.append(_np.asarray(img_dict[cam_key]))
+                    if len(imgs_np) < self._num_views:
+                        pad = self._num_views - len(imgs_np)
+                        zero = _np.zeros((224, 224, 3), dtype=_np.float32)
+                        imgs_np.extend([zero] * pad)
+                    imgs_np = _np.stack(imgs_np[: self._num_views], axis=0)
+
+                    # Move to device and cast to bf16 for the Triton kernels.
+                    images = _torch.from_numpy(imgs_np).to(self._device).to(_torch.bfloat16)
+                    state = _torch.from_numpy(state_np).to(self._device).to(_torch.bfloat16)
+
                     batch_to_device_ms = (_time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
 
                     # Model forward
@@ -240,15 +330,27 @@ def create_policy(args: Args) -> _policy.Policy:
                     actions = self._engine.forward(images, state, noise)
                     infer_ms = (_time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
 
+                    # Debug: realtime-vla model outputs in normalized space (before Unnormalize).
+                    _log_align("rt_model_out_normalized", {"state": state_np, "actions": actions})
+
                     # Host copy
                     t0 = _time.monotonic()
                     out = actions.float().cpu().numpy()
                     host_copy_ms = (_time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
 
-                    # Output transform (slice to 7 dims to match Yuanluo)
+                    # Output transforms: mirror the JAX policy server by first
+                    # unnormalizing with the same norm_stats, then applying
+                    # YuanluoOutputs to obtain 7D actions in the dataset space.
                     t0 = _time.monotonic()
-                    out7 = out[:, :7]
+                    outputs = {"state": state_np, "actions": out}
+                    outputs = self._unnormalize(outputs)
+                    for t in self._data_output_transforms:
+                        outputs = t(outputs)
+                    out7 = _np.asarray(outputs["actions"], dtype=_np.float32)
                     output_transform_ms = (_time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
+
+                    # Debug: final outputs after Unnormalize + YuanluoOutputs.
+                    _log_align("rt_post_output_transform", {"state": state_np, "actions": out7})
 
                     total_ms = (_time.monotonic() - total_t0) * 1000.0 if profile_enabled else 0.0
 
@@ -267,7 +369,18 @@ def create_policy(args: Args) -> _policy.Policy:
                         }
                     return result
 
-            return _RealtimeVLAPolicy(engine, args.policy.num_views, args.policy.chunk_size, args.policy.device)
+            return _RealtimeVLAPolicy(
+                engine,
+                args.policy.num_views,
+                args.policy.chunk_size,
+                args.policy.device,
+                yuanluo_inputs,
+                normalize,
+                resize,
+                pad_state,
+                unnormalize,
+                data_output_transforms,
+            )
         case Default():
             return create_default_policy(args.env, default_prompt=args.default_prompt)
 
@@ -397,4 +510,3 @@ def main(args: Args) -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, force=True)
     main(tyro.cli(Args))
-
