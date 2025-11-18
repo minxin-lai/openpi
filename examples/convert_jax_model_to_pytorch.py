@@ -393,15 +393,67 @@ def slice_gemma_state_dict(state_dict, config, *, num_expert, checkpoint_dir, pi
     return final_state_dict
 
 
+def _load_params_flexible(checkpoint_dir: str, restore_precision: str | None = None):
+    """Load params from either an Orbax params tree or a pickle 'checkpoint' file.
+
+    - Preferred: {checkpoint_dir}/params (OCDBT/Orbax)
+    - Fallback:  {checkpoint_dir}/checkpoint (pickle with {'params': ...})
+    Returns a pure dict of numpy arrays (no '/value' suffixes).
+    """
+    import os
+    import pickle
+    from flax import traverse_util as _traverse
+
+    ocdbt_manifest = os.path.join(checkpoint_dir, "params", "manifest.ocdbt")
+    if os.path.exists(ocdbt_manifest):
+        params = openpi.models.model.restore_params(
+            f"{checkpoint_dir}/params/", restore_type=np.ndarray, dtype=restore_precision
+        )
+        return params
+
+    # Fallback to pickle checkpoint
+    ckpt_file = os.path.join(checkpoint_dir, "checkpoint")
+    if os.path.exists(ckpt_file):
+        with open(ckpt_file, "rb") as f:
+            ckpt = pickle.load(f)
+        if "params" not in ckpt:
+            raise ValueError("Invalid pickle checkpoint: missing 'params'")
+        params = ckpt["params"]
+        # Remove '/value' leaves if present
+        flat = _traverse.flatten_dict(params)
+        if all(k[-1] == "value" for k in flat.keys()):
+            flat = {k[:-1]: v for k, v in flat.items()}
+            params = _traverse.unflatten_dict(flat)
+        # Ensure numpy arrays (convert from jax if needed) without requiring jax import
+        def to_numpy(x):
+            try:
+                # Handle JAX arrays if present without importing at top level
+                import jax
+                if isinstance(x, jax.Array):
+                    return np.array(x)
+            except Exception:
+                pass
+            return np.array(x) if not isinstance(x, np.ndarray) else x
+
+        def map_tree(obj):
+            if isinstance(obj, dict):
+                return {k: map_tree(v) for k, v in obj.items()}
+            return to_numpy(obj)
+
+        params = map_tree(params)
+        return params
+
+    raise FileNotFoundError(
+        f"Could not find orbax params or pickle checkpoint under: {checkpoint_dir}"
+    )
+
+
 def slice_initial_orbax_checkpoint(checkpoint_dir: str, restore_precision: str | None = None):
     """Load and process params by restoring via JAX model loader first.
     This respects dtype conversions that occur during model restore.
+    Supports both OCDBT params tree and pickle checkpoints produced by jax_merge_lora.py.
     """
-    # Use repository restore utility to load a pure dict of params (value suffix removed)
-    params = openpi.models.model.restore_params(
-        f"{checkpoint_dir}/params/", restore_type=np.ndarray, dtype=restore_precision
-    )
-
+    params = _load_params_flexible(checkpoint_dir, restore_precision)
     return {"paligemma_params": traversals.flatten_mapping(params["PaliGemma"], sep="/"), "projection_params": params}
 
 

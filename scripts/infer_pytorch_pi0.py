@@ -105,12 +105,28 @@ def create_dummy_observation_aloha(prompt: str) -> dict[str, Any]:
     }
 
 
+def create_dummy_observation_yuanluo(prompt: str) -> dict[str, Any]:
+    """Create a dummy Yuanluo observation matching yuanluo_policy expectations."""
+    return {
+        # YuanluoInputs expects CHW or HWC; if CHW it will transpose to HWC.
+        "observation.images.head_camera": np.random.randint(0, 256, size=(3, 224, 224), dtype=np.uint8),
+        "observation.images.wrist_left_camera": np.random.randint(0, 256, size=(3, 224, 224), dtype=np.uint8),
+        "observation.images.gelsight_left": np.random.randint(0, 256, size=(3, 224, 224), dtype=np.uint8),
+        # YuanluoInputs slices [:7]
+        "observation.state": np.random.rand(7).astype(np.float32),
+        "prompt": prompt,
+    }
+
+
 def get_observation_fn(config_name: str):
     """Get the appropriate observation function based on config name."""
-    if "droid" in config_name.lower():
+    name = config_name.lower()
+    if "droid" in name:
         return create_dummy_observation_droid
-    elif "aloha" in config_name.lower():
+    elif "aloha" in name:
         return create_dummy_observation_aloha
+    elif "yuanluo" in name:
+        return create_dummy_observation_yuanluo
     else:
         logger.warning(f"Unknown config name: {config_name}, defaulting to DROID observation")
         return create_dummy_observation_droid

@@ -705,6 +705,28 @@ _CONFIGS = [
         batch_size=8,
     ),
 
+    # Inference config for the Yuanluo realtime (PyTorch) checkpoint converted
+    # via third_party/realtime-vla. Keep model/data identical to pi0_yuanluo_delta
+    # so that observation / action conventions remain the same.
+    TrainConfig(
+        name="pi0_yuanluo_realtime",
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            action_horizon=32,
+        ),
+        data=LeRobotYuanluoDataConfig(
+            repo_id="llly/usbinsert_v2_10_28",
+            extra_delta_transform=True,
+        ),
+        # For realtime-vla we typically load weights from a PyTorch safetensors
+        # checkpoint produced by convert_from_jax.py, so the weight loader is
+        # left as the default NoOp. This config is mainly for eval / bookkeeping.
+        weight_loader=weight_loaders.NoOpWeightLoader(),
+        ema_decay=None,
+        batch_size=1,
+    ),
+
 
     TrainConfig(
         name="pi05_droid",
