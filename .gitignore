@@ -170,3 +170,5 @@ task/
 AGENTS.md
 CLAUDE.md
 results/
+*.npz
+*.npy

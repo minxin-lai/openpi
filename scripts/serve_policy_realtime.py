@@ -179,21 +179,46 @@ def create_policy(args: Args) -> _policy.Policy:
 
             # Prefer checkpoint-local norm_stats if JAX checkpoint dir is given,
             # matching create_trained_policy's behavior for JAX inference.
+            norm_stats_source = "config"
             if args.policy.jax_checkpoint_dir is not None and asset_id is not None:
                 assets_dir = _pathlib.Path(args.policy.jax_checkpoint_dir).expanduser().resolve() / "assets"
                 try:
-                    norm_stats = _checkpoints.load_norm_stats(assets_dir, asset_id)
+                    loaded_norm_stats = _checkpoints.load_norm_stats(assets_dir, asset_id)
+                    norm_stats = loaded_norm_stats
+                    norm_stats_source = "jax_checkpoint"
                     logging.info(
-                        "Loaded norm stats for realtime-vla from JAX checkpoint assets: %s (asset_id=%s)",
+                        "✓ Loaded norm_stats for realtime-vla from JAX checkpoint: %s (asset_id=%s)",
                         assets_dir,
                         asset_id,
                     )
                 except Exception:
                     logging.exception(
-                        "Failed to load norm stats from JAX checkpoint assets at %s; "
-                        "falling back to config assets for realtime-vla.",
+                        "✗ Failed to load norm_stats from JAX checkpoint at %s; "
+                        "falling back to config assets. THIS WILL CAUSE OUTPUT MISALIGNMENT!",
                         assets_dir,
                     )
+            else:
+                if asset_id is not None:
+                    logging.warning(
+                        "⚠️  --policy.jax_checkpoint_dir NOT specified! Using config norm_stats. "
+                        "This may cause large output differences vs JAX inference. "
+                        "Please specify --policy.jax_checkpoint_dir to load correct norm_stats."
+                    )
+
+            # Log norm_stats summary for verification
+            logging.info("=" * 80)
+            logging.info("Norm Stats Configuration:")
+            logging.info("  Source: %s", norm_stats_source)
+            if norm_stats is not None:
+                if "state" in norm_stats and norm_stats["state"] is not None:
+                    logging.info("  State mean (first 3): %s", norm_stats["state"].mean[:3].tolist())
+                    logging.info("  State std (first 3): %s", norm_stats["state"].std[:3].tolist())
+                if "actions" in norm_stats and norm_stats["actions"] is not None:
+                    logging.info("  Actions mean (first 3): %s", norm_stats["actions"].mean[:3].tolist())
+                    logging.info("  Actions std (first 3): %s", norm_stats["actions"].std[:3].tolist())
+            else:
+                logging.error("  ✗ norm_stats is None! Policy cannot be created.")
+            logging.info("=" * 80)
 
             # Construct the exact Yuanluo input/output transforms we need around
             # the realtime-vla engine. We reuse the same components as the JAX
@@ -243,6 +268,8 @@ def create_policy(args: Args) -> _policy.Policy:
                         "chunk_size": chunk_size,
                         "device": device,
                     }
+                    # Alignment step counter (per-inference call)
+                    self._align_step_counter: int = -1
 
                 def _to_bf16_cuda_image(self, img: _np.ndarray | _torch.Tensor) -> _torch.Tensor:
                     if isinstance(img, _torch.Tensor):
@@ -268,6 +295,54 @@ def create_policy(args: Args) -> _policy.Policy:
                     # Yuanluo + Normalize transforms before calling the engine.
                     raise RuntimeError("_gather_images should not be called directly")
 
+                def _print_debug_info(self, tag: str, data: dict):
+                    """打印调试信息"""
+                    debug_enabled = os.getenv("OPENPI_DEBUG_TRANSFORMS") not in (None, "", "0", "false", "False", "no")
+                    if not debug_enabled:
+                        return
+
+                    print(f"\n{'='*70}")
+                    print(f"[DEBUG REALTIME-VLA] {tag}")
+                    print(f"{'='*70}")
+
+                    def _print_array(name: str, arr):
+                        if arr is None:
+                            return
+                        try:
+                            if isinstance(arr, _torch.Tensor):
+                                # Fix: Convert BFloat16 to Float32 before numpy conversion
+                                if arr.dtype == _torch.bfloat16:
+                                    arr = arr.float()
+                                arr = arr.cpu().numpy()
+                            arr = _np.asarray(arr)
+
+                            print(f"  {name}:")
+                            print(f"    dtype: {arr.dtype}, shape: {arr.shape}")
+
+                            # Skip statistics for non-numeric types
+                            if arr.dtype.kind in ('U', 'S', 'O'):  # Unicode, bytes, object
+                                if arr.size <= 3:
+                                    print(f"    values: {arr.flatten().tolist()}")
+                                else:
+                                    print(f"    first 3: {arr.flatten()[:3].tolist()}")
+                            elif arr.size > 0:
+                                print(f"    min: {arr.min():.6f}, max: {arr.max():.6f}, mean: {arr.mean():.6f}")
+                                if arr.size <= 10:
+                                    print(f"    values: {arr.flatten().tolist()}")
+                                else:
+                                    print(f"    first 8: {arr.flatten()[:8].tolist()}")
+                        except Exception as e:
+                            print(f"  {name}: <error printing: {e}>")
+
+                    for key, value in data.items():
+                        if isinstance(value, dict):
+                            print(f"{key}:")
+                            for k, v in value.items():
+                                _print_array(f"  {k}", v)
+                        else:
+                            _print_array(key, value)
+                    print()
+
                 def infer(self, obs: dict) -> dict:
                     import time as _time
 
@@ -275,7 +350,11 @@ def create_policy(args: Args) -> _policy.Policy:
 
                     total_t0 = _time.monotonic()
 
-                    # Debug: raw observation from websocket (Yuanluo-style keys).
+                    # Alignment step index (per-inference call).
+                    align_step = self._align_step_counter + 1
+                    self._align_step_counter = align_step
+
+                    # Stage 1: Raw observation from websocket (Yuanluo-style keys).
                     _state_raw = obs["observation.state"] if "observation.state" in obs else obs.get("state")
                     _log_align(
                         "rt_pre_obs",
@@ -283,7 +362,11 @@ def create_policy(args: Args) -> _policy.Policy:
                             "state": _state_raw,
                             # Images are still nested under observation.images.* at this point.
                         },
+                        step=align_step,
                     )
+
+                    # Debug print: 1. 转换前
+                    self._print_debug_info("1. 转换前 (原始观测)", obs)
 
                     t0 = _time.monotonic()
                     # Reuse the same Yuanluo + normalization pipeline as the JAX
@@ -294,13 +377,25 @@ def create_policy(args: Args) -> _policy.Policy:
                     # Yuanluo-style keys (see LeRobotYuanluoDataConfig and
                     # infer_pytorch_pi0.py), so we skip the dataset-only repack
                     # transforms and go straight into YuanluoInputs.
-                    inputs = self._yuanluo_inputs(obs)
-                    inputs = self._normalize(inputs)
-                    inputs = self._resize(inputs)
-                    inputs = self._pad_state(inputs)
 
-                    # Debug: after YuanluoInputs + Normalize + Resize + Pad.
-                    _log_align("rt_post_input_transform", inputs)
+                    # Stage 2: After YuanluoInputs (extract state[:7], remap images)
+                    inputs = self._yuanluo_inputs(obs)
+                    _log_align("rt_post_yuanluo_inputs", inputs, step=align_step)
+
+                    # Stage 3: After Normalize ((x - mean) / std)
+                    inputs = self._normalize(inputs)
+                    _log_align("rt_post_normalize", inputs, step=align_step)
+
+                    # Stage 4: After ResizeImages (224x224)
+                    inputs = self._resize(inputs)
+                    _log_align("rt_post_resize", inputs, step=align_step)
+
+                    # Stage 5: After PadStatesAndActions ([7] -> [32])
+                    inputs = self._pad_state(inputs)
+                    _log_align("rt_post_pad", inputs, step=align_step)
+
+                    # Combined snapshot for compatibility
+                    _log_align("rt_post_input_transform", inputs, step=align_step)
 
                     # Extract normalized images/state in the same order used by
                     # YuanluoInputs: [base_0_rgb, left_wrist_0_rgb]. We keep the
@@ -322,6 +417,23 @@ def create_policy(args: Args) -> _policy.Policy:
                     images = _torch.from_numpy(imgs_np).to(self._device).to(_torch.bfloat16)
                     state = _torch.from_numpy(state_np).to(self._device).to(_torch.bfloat16)
 
+                    # Stage 6: Model input (final tensor ready for inference)
+                    # Use the same keys as the JAX path so alignment logs match.
+                    _log_align(
+                        "rt_model_input",
+                        {
+                            "state": state_np,
+                            "image": img_dict,
+                        },
+                        step=align_step,
+                    )
+
+                    # Debug print: 2. 转换后
+                    self._print_debug_info("2. 转换后 (输入模型前)", {
+                        "images": images,
+                        "state": state,
+                    })
+
                     batch_to_device_ms = (_time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
 
                     # Model forward
@@ -330,27 +442,47 @@ def create_policy(args: Args) -> _policy.Policy:
                     actions = self._engine.forward(images, state, noise)
                     infer_ms = (_time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
 
-                    # Debug: realtime-vla model outputs in normalized space (before Unnormalize).
-                    _log_align("rt_model_out_normalized", {"state": state_np, "actions": actions})
-
                     # Host copy
                     t0 = _time.monotonic()
                     out = actions.float().cpu().numpy()
                     host_copy_ms = (_time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
+
+                    # Stage 7: Model output in normalized space (before Unnormalize)
+                    _log_align("rt_model_out_normalized", {"state": state_np, "actions": out}, step=align_step)
+
+                    # Debug print: 3. 推理后
+                    self._print_debug_info("3. 推理后 (模型输出, normalized)", {
+                        "state": state_np,
+                        "actions": out,
+                    })
 
                     # Output transforms: mirror the JAX policy server by first
                     # unnormalizing with the same norm_stats, then applying
                     # YuanluoOutputs to obtain 7D actions in the dataset space.
                     t0 = _time.monotonic()
                     outputs = {"state": state_np, "actions": out}
+
+                    # Stage 8: After Unnormalize (x * std + mean)
                     outputs = self._unnormalize(outputs)
-                    for t in self._data_output_transforms:
+                    _log_align("rt_post_unnormalize", outputs, step=align_step)
+
+                    # Stage 9: After each data_output_transform (AbsoluteActions, YuanluoOutputs, etc)
+                    for idx, t in enumerate(self._data_output_transforms):
                         outputs = t(outputs)
+                        # Log after AbsoluteActions specifically
+                        if hasattr(t, '__class__') and 'AbsoluteActions' in t.__class__.__name__:
+                            _log_align("rt_post_absolute_actions", outputs, step=align_step)
+
                     out7 = _np.asarray(outputs["actions"], dtype=_np.float32)
                     output_transform_ms = (_time.monotonic() - t0) * 1000.0 if profile_enabled else 0.0
 
-                    # Debug: final outputs after Unnormalize + YuanluoOutputs.
-                    _log_align("rt_post_output_transform", {"state": state_np, "actions": out7})
+                    # Debug print: 4. 最终输出
+                    self._print_debug_info("4. 最终输出 (Unnormalize后)", {
+                        "actions": out7,
+                    })
+
+                    # Stage 10: Final output after all transforms
+                    _log_align("rt_post_output_transform", {"state": state_np, "actions": out7}, step=align_step)
 
                     total_ms = (_time.monotonic() - total_t0) * 1000.0 if profile_enabled else 0.0
 
