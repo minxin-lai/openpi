@@ -276,17 +276,24 @@ def create_policy(args: Args) -> _policy.Policy:
                         t = img
                     else:
                         t = _torch.from_numpy(_np.array(img))
+
+                    # Accept both CHW and HWC single images and convert to HWC.
                     if t.ndim == 3 and t.shape[0] in (1, 3) and t.shape[1] == 224 and t.shape[2] == 224:
                         # CHW -> HWC
                         t = t.permute(1, 2, 0)
-                    # Move to CUDA and cast
+
+                    # Move to CUDA before further processing.
                     t = t.to(self._device)
+
                     if t.dtype != _torch.bfloat16:
-                        # Normalize if likely uint8 or float32 in [0,255]
+                        # Mirror JAX Observation.from_dict: uint8 images -> [-1, 1] float.
                         if t.dtype in (_torch.uint8, _torch.int8, _torch.int16, _torch.int32, _torch.int64):
-                            t = t.float().div(255.0)
-                        elif t.dtype in (_torch.float32, _torch.float64) and t.max() > 1.0:
-                            t = t.float().div(255.0)
+                            t = t.float().div(255.0).mul(2.0).sub(1.0)
+                        elif t.dtype in (_torch.float32, _torch.float64):
+                            # If images are in [0, 255], normalize to [-1, 1].
+                            if t.max() > 1.0:
+                                t = t.float().div(255.0).mul(2.0).sub(1.0)
+                            # If already in [-1, 1], leave as-is.
                         t = t.to(_torch.bfloat16)
                     return t
 
@@ -412,6 +419,16 @@ def create_policy(args: Args) -> _policy.Policy:
                         zero = _np.zeros((224, 224, 3), dtype=_np.float32)
                         imgs_np.extend([zero] * pad)
                     imgs_np = _np.stack(imgs_np[: self._num_views], axis=0)
+
+                    # Mirror JAX Observation.from_dict: uint8 images -> [-1, 1] float.
+                    # In JAX, this conversion happens inside Observation.from_dict just
+                    # before the model sees the images. Here we apply the same mapping
+                    # explicitly before sending tensors to the realtime-vla engine.
+                    if imgs_np.dtype != _np.float32:
+                        imgs_np = imgs_np.astype(_np.float32)
+                    # If images appear to be in [0, 255], normalize to [-1, 1].
+                    if imgs_np.max() > 1.0:
+                        imgs_np = imgs_np / 255.0 * 2.0 - 1.0
 
                     # Move to device and cast to bf16 for the Triton kernels.
                     images = _torch.from_numpy(imgs_np).to(self._device).to(_torch.bfloat16)
