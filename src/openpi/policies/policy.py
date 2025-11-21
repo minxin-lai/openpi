@@ -111,12 +111,28 @@ def _log_alignment_snapshot(tag: str, data: dict[str, Any], *, step: int | None 
 
         # Actions summary (also split for readability)
         if actions is not None:
-            a = _summarize_array(actions, max_elems=8)
-            if "shape" in a:
-                lines.append("Actions:")
-                lines.append(f"  shape={a['shape']} dtype={a['dtype']}")
-                lines.append(f"  range=[{a['min']:.6f},{a['max']:.6f}]")
-                lines.append(f"  first={a['first']}")
+            tag_is_post_transform = printable_tag == "post_output_transform"
+            if tag_is_post_transform:
+                try:
+                    if isinstance(actions, torch.Tensor):
+                        arr = actions.detach().cpu().numpy()
+                    else:
+                        arr = np.asarray(actions)
+                except Exception:
+                    arr = None
+                if arr is not None:
+                    lines.append("Actions:")
+                    lines.append(f"  shape={arr.shape} dtype={arr.dtype}")
+                    lines.append(f"  values={arr.tolist()}")
+                else:
+                    lines.append("Actions: <unprintable>")
+            else:
+                a = _summarize_array(actions, max_elems=8)
+                if "shape" in a:
+                    lines.append("Actions:")
+                    lines.append(f"  shape={a['shape']} dtype={a['dtype']}")
+                    lines.append(f"  range=[{a['min']:.6f},{a['max']:.6f}]")
+                    lines.append(f"  first={a['first']}")
 
         # Image summary: include basic stats per camera
         if isinstance(image, dict):
