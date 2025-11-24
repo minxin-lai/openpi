@@ -700,6 +700,57 @@ _CONFIGS = [
         batch_size=8,
     ),
 
+    # Inference config for the Yuanluo realtime (PyTorch) checkpoint converted
+    # via third_party/realtime-vla. Keep model/data identical to pi0_yuanluo_merged
+    # so that observation / action conventions remain the same.
+    # IMPORTANT: The realtime-vla PyTorch checkpoint contains merged weights (base + LoRA),
+    # not LoRA deltas. We use the standard (non-LoRA) variants here to reflect this.
+    # The model config is primarily used for data transforms and norm_stats; the actual
+    # PyTorch model is loaded separately by Pi0Inference in serve_policy_realtime.py.
+    TrainConfig(
+        name="pi0_yuanluo_realtime",
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b",  # Non-LoRA: realtime checkpoint has merged weights
+            action_expert_variant="gemma_300m",  # Non-LoRA: realtime checkpoint has merged weights
+            action_horizon=32,
+        ),
+        data=LeRobotYuanluoDataConfig(
+            repo_id="llly/usbinsert_v2_10_28",
+            extra_delta_transform=True,
+        ),
+        # For realtime-vla we load weights from a PyTorch .pkl checkpoint produced by
+        # convert_from_jax.py (which converts from the merged JAX checkpoint). The weight
+        # loader is NoOp because weights are loaded directly by Pi0Inference, not through
+        # the standard JAX checkpoint restoration path.
+        weight_loader=weight_loaders.NoOpWeightLoader(),
+        ema_decay=None,
+        batch_size=1,
+    ),
+
+    # Inference config for the Yuanluo merged JAX checkpoint (LoRA weights merged into base model).
+    # IMPORTANT: The merged checkpoint already contains the full base weights with LoRA deltas
+    # applied, and no remaining lora_* parameters. We therefore use the non-LoRA variants here
+    # and load the checkpoint directly via restore_params(checkpoint_dir / "params") in
+    # create_trained_policy, without adding any extra LoRA modules on top.
+    TrainConfig(
+        name="pi0_yuanluo_merged",
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b",  # Non-LoRA variant: merged weights already include LoRA effects
+            action_expert_variant="gemma_300m",  # Non-LoRA variant for action expert as well
+            action_horizon=32,
+        ),
+        data=LeRobotYuanluoDataConfig(
+            repo_id="llly/usbinsert_v2_10_28",
+            extra_delta_transform=True,
+        ),
+        # For merged JAX inference we let policy_config.create_trained_policy load the params
+        # directly from --policy.dir (checkpoint_dir / "params"), so no additional weight_loader
+        # is needed here.
+        weight_loader=weight_loaders.NoOpWeightLoader(),
+        ema_decay=None,
+        batch_size=1,
+    ),
+
 
     TrainConfig(
         name="pi05_droid",

@@ -56,12 +56,32 @@ def create_trained_policy(
     else:
         model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+    norm_stats_source = "provided"
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
         # that the policy is using the same normalization stats as the original training process.
         if data_config.asset_id is None:
             raise ValueError("Asset id is required to load norm stats.")
         norm_stats = _checkpoints.load_norm_stats(checkpoint_dir / "assets", data_config.asset_id)
+        norm_stats_source = "checkpoint"
+        logging.info(
+            "✓ Loaded norm_stats from checkpoint: %s/assets (asset_id=%s)",
+            checkpoint_dir,
+            data_config.asset_id,
+        )
+
+    # Log norm_stats summary for verification
+    logging.info("=" * 80)
+    logging.info("Norm Stats Configuration (JAX Policy):")
+    logging.info("  Source: %s", norm_stats_source)
+    if norm_stats is not None:
+        if "state" in norm_stats and norm_stats["state"] is not None:
+            logging.info("  State mean (first 3): %s", norm_stats["state"].mean[:3].tolist())
+            logging.info("  State std (first 3): %s", norm_stats["state"].std[:3].tolist())
+        if "actions" in norm_stats and norm_stats["actions"] is not None:
+            logging.info("  Actions mean (first 3): %s", norm_stats["actions"].mean[:3].tolist())
+            logging.info("  Actions std (first 3): %s", norm_stats["actions"].std[:3].tolist())
+    logging.info("=" * 80)
 
     # Determine the device to use for PyTorch models
     if is_pytorch and pytorch_device is None:

@@ -4,3 +4,7 @@
 [submodule "third_party/libero"]
 	path = third_party/libero
 	url = https://github.com/Lifelong-Robot-Learning/LIBERO.git
+
+[submodule "third_party/realtime-vla"]
+	path = third_party/realtime-vla
+	url = git@172.16.111.66:mxlai/realtime-vla.git
