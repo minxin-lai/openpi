@@ -816,6 +816,188 @@ _CONFIGS = [
         num_train_steps=20_000,
         batch_size=64,
     ),
+    # Example custom pi05 (PyTorch) fine-tuning config on a local LeRobot-Aloha style dataset.
+    # Note: PyTorch training uses `pytorch_weight_path` (a directory containing `model.safetensors`) for initialization.
+    TrainConfig(
+        name="pi05_pick_place_pytorch",
+        assets_base_dir="/workspace/laiminxin/datasets",  # norm_stats location
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="/workspace/laiminxin/datasets/six_object_pick_conveyor",
+            assets=AssetsConfig(
+                # Load normalization stats from:
+                #   /workspace/laiminxin/datasets/six_object_pick_conveyor/norm_stats.json
+                assets_dir="/workspace/laiminxin/datasets",
+                asset_id="six_object_pick_conveyor",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            adapt_to_pi=False,
+            default_prompt=(
+                "pick up the 2 Circuit Breaker, 2 Bearing, 2 tube, "
+                "and place it on the Conveyor Belt sequentially"
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        # Set this to the converted PyTorch base checkpoint directory.
+        # You can override it from CLI via `--pytorch_weight_path ...`.
+        pytorch_weight_path="/workspace/laiminxin/models/pi05_base_pytorch",
+        num_train_steps=30_000,
+        batch_size=16,
+        save_interval=5_000,
+        # EMA is currently not supported in `scripts/train_pytorch.py`.
+        ema_decay=None,
+    ),
+    # Pi05 with LightVLA token pruning enabled (PyTorch training only).
+    TrainConfig(
+        name="pi05_pick_place_pytorch_pruning",
+        assets_base_dir="/workspace/laiminxin/datasets",  # norm_stats location
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            token_pruning_enabled=True,  # 启用 LightVLA 剪枝, 默认 noise_scale=1.0
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="/workspace/laiminxin/datasets/six_object_pick_conveyor",
+            assets=AssetsConfig(
+                # Load normalization stats from:
+                #   /workspace/laiminxin/datasets/six_object_pick_conveyor/norm_stats.json
+                assets_dir="/workspace/laiminxin/datasets",
+                asset_id="six_object_pick_conveyor",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            adapt_to_pi=False,
+            default_prompt=(
+                "pick up the 2 Circuit Breaker, 2 Bearing, 2 tube, "
+                "and place it on the Conveyor Belt sequentially"
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                        }
+                    )
+                ]
+            ),
+        ),
+        pytorch_weight_path="/workspace/laiminxin/models/pi05_base_pytorch",
+        num_train_steps=30_000,
+        batch_size=16,
+        save_interval=5_000,
+        ema_decay=None,
+        wandb_enabled=True,
+    ),
+    # Pi05 + LIBERO (PyTorch training) - Baseline (no pruning), aligned with official pi05_libero
+    TrainConfig(
+        name="pi05_libero_pytorch",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        pytorch_weight_path="/workspace/laiminxin/models/pi05_base_pytorch",
+        batch_size=64,  # Official uses 256, adjust for single GPU
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,  # Aligned with official pi05_libero
+            peak_lr=5e-5,
+            decay_steps=1_000_000,  # Aligned with official pi05_libero
+            decay_lr=5e-5,  # Aligned with official pi05_libero
+        ),
+        num_train_steps=30_000,
+        save_interval=5_000,
+        ema_decay=None,  # PyTorch training doesn't support EMA
+        wandb_enabled=True,
+    ),
+    # Pi05 + LIBERO + LightVLA (PyTorch training) - aligned with official pi05_libero
+    TrainConfig(
+        name="pi05_libero_pytorch_lightvla",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            token_pruning_enabled=True,  # LightVLA token pruning
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        pytorch_weight_path="/workspace/laiminxin/models/pi05_base_pytorch",
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,  # Aligned with official pi05_libero
+            peak_lr=5e-5,
+            decay_steps=1_000_000,  # Aligned with official pi05_libero
+            decay_lr=5e-5,  # Aligned with official pi05_libero
+        ),
+        num_train_steps=30_000,
+        save_interval=5_000,
+        ema_decay=None,
+        wandb_enabled=True,
+    ),
+    # Pi05 + LIBERO + LightVLA (PyTorch training) - ALL suites combined (legacy config)
+    TrainConfig(
+        name="pi05_libero_pytorch_pruning",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            action_horizon=10,
+            discrete_state_input=False,
+            token_pruning_enabled=True,  # 启用 LightVLA token pruning
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        pytorch_weight_path="/workspace/laiminxin/models/pi05_base_pytorch",
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=30_000,
+            decay_lr=5e-6,
+        ),
+        num_train_steps=30_000,
+        save_interval=5_000,
+        ema_decay=None,
+        wandb_enabled=True,
+    ),
+    # NOTE: Per-suite LIBERO configs (libero_spatial, libero_object, libero_goal, libero_10)
+    # have been removed as LeRobotLiberoDataConfig does not support task_indices filtering.
+    # Use the full LIBERO dataset configs above instead.
+    #
     #
     # Fine-tuning DROID configs.
     #

@@ -1,14 +1,16 @@
 import logging
 import math
+import os
 
 import torch
 from torch import Tensor
 from torch import nn
 import torch.nn.functional as F  # noqa: N812
 
-import openpi.models.gemma as _gemma
+from openpi.models_pytorch import gemma_config as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
+from openpi.models_pytorch.token_pruner import ImageTokenPruner
 
 
 def get_safe_dtype(target_dtype, device_type):
@@ -86,6 +88,11 @@ class PI0Pytorch(nn.Module):
         super().__init__()
         self.config = config
         self.pi05 = config.pi05
+        self.token_pruning_enabled = bool(getattr(config, "token_pruning_enabled", False))
+        self.token_prune_noise_scale = float(getattr(config, "token_prune_noise_scale", 0.0))
+        self.token_prune_keep_tokens = getattr(config, "token_prune_keep_tokens", None)
+        self.token_prune_keep_ratio = getattr(config, "token_prune_keep_ratio", None)
+        self._token_pruner_user_noise_scale: float | None = None
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -109,7 +116,34 @@ class PI0Pytorch(nn.Module):
             self.action_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
 
         torch.set_float32_matmul_precision("high")
-        self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
+
+        # Token pruning (LightVLA-style) integrates into `embed_prefix()` and may introduce data-dependent
+        # prefix lengths at inference; TorchInductor compilation can become unstable in this case.
+        self.token_pruner: ImageTokenPruner | None = None
+        if self.token_pruning_enabled:
+            hidden_size = int(self.paligemma_with_expert.paligemma.config.text_config.hidden_size)
+            self.token_pruner = ImageTokenPruner(hidden_size=hidden_size)
+            # Apply eval-time pruning budget (if configured). Training keeps sequence length unchanged.
+            self.token_pruner.set_keep_tokens(self.token_prune_keep_tokens)
+            self.token_pruner.set_keep_ratio(self.token_prune_keep_ratio)
+            logging.info(f"Enabled LightVLA-style token pruning (hidden_size={hidden_size})")
+
+        def _truthy_env(name: str, default: str = "1") -> bool:
+            val = os.getenv(name, default)
+            return val is not None and val.lower() not in ("", "0", "false", "no", "off")
+
+        compile_enabled = _truthy_env("OPENPI_TORCH_COMPILE", "1")
+        compile_pruning = _truthy_env("OPENPI_TORCH_COMPILE_PRUNING", "0")
+
+        if compile_enabled and (not self.token_pruning_enabled or compile_pruning):
+            # Use dynamic shapes when pruning is enabled, otherwise keep default behavior.
+            dynamic = True if self.token_pruning_enabled else None
+            self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune", dynamic=dynamic)
+        elif compile_enabled and self.token_pruning_enabled and not compile_pruning:
+            logging.info(
+                "Token pruning is enabled; skipping `torch.compile(sample_actions)` by default. "
+                "Set OPENPI_TORCH_COMPILE_PRUNING=1 to force compilation with dynamic shapes."
+            )
 
         # Initialize gradient checkpointing flag
         self.gradient_checkpointing_enabled = False
@@ -193,22 +227,6 @@ class PI0Pytorch(nn.Module):
         pad_masks = []
         att_masks = []
 
-        # Process images
-        for img, img_mask in zip(images, img_masks, strict=True):
-
-            def image_embed_func(img):
-                return self.paligemma_with_expert.embed_image(img)
-
-            img_emb = self._apply_checkpoint(image_embed_func, img)
-
-            bsize, num_img_embs = img_emb.shape[:2]
-
-            embs.append(img_emb)
-            pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
-
-            # Create attention masks so that image tokens attend to each other
-            att_masks += [0] * num_img_embs
-
         # Process language tokens
         def lang_embed_func(lang_tokens):
             lang_emb = self.paligemma_with_expert.embed_language_tokens(lang_tokens)
@@ -216,6 +234,37 @@ class PI0Pytorch(nn.Module):
             return lang_emb * math.sqrt(lang_emb_dim)
 
         lang_emb = self._apply_checkpoint(lang_embed_func, lang_tokens)
+
+        # Configure pruning noise: training uses configured noise (or user override), eval disables noise.
+        if self.token_pruner is not None:
+            if self.training:
+                noise_scale = self._token_pruner_user_noise_scale
+                if noise_scale is None:
+                    noise_scale = self.token_prune_noise_scale
+                self.token_pruner.set_noise_scale(noise_scale)
+            else:
+                self.token_pruner.set_noise_scale(None)
+
+        # Process images (optionally prune using language context)
+        for img, img_mask in zip(images, img_masks, strict=True):
+
+            def image_embed_func(img):
+                return self.paligemma_with_expert.embed_image(img)
+
+            img_emb = self._apply_checkpoint(image_embed_func, img)
+
+            if self.token_pruning_enabled and self.token_pruner is not None:
+                img_emb, kept_mask = self.token_pruner.prune(img_emb, lang_emb)
+                bsize, num_img_embs = img_emb.shape[:2]
+                pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs) & kept_mask)
+            else:
+                bsize, num_img_embs = img_emb.shape[:2]
+                pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
+
+            embs.append(img_emb)
+
+            # Create attention masks so that image tokens attend to each other
+            att_masks += [0] * num_img_embs
 
         embs.append(lang_emb)
         pad_masks.append(lang_masks)
@@ -233,6 +282,35 @@ class PI0Pytorch(nn.Module):
         att_masks = att_masks[None, :].expand(bsize, len(att_masks))
 
         return embs, pad_masks, att_masks
+
+    def set_token_pruner_noise_scale(self, noise_scale: float | None) -> None:
+        """Override pruning noise scale (training only). Use None to revert to config default."""
+        self._token_pruner_user_noise_scale = None if noise_scale is None else float(noise_scale)
+
+    def set_token_pruner_keep_tokens(self, keep_tokens: int | None) -> None:
+        """Set eval-time keep budget (patch tokens per image). Use None to disable fixed-budget pruning."""
+        if self.token_pruner is None:
+            return
+        self.token_pruner.set_keep_tokens(keep_tokens)
+
+    def set_token_pruner_keep_ratio(self, keep_ratio: float | None) -> None:
+        """Set eval-time keep ratio in (0, 1]. Use None to disable fixed-budget pruning."""
+        if self.token_pruner is None:
+            return
+        self.token_pruner.set_keep_ratio(keep_ratio)
+
+    def get_token_pruning_stats(self) -> dict:
+        """Best-effort pruning stats for telemetry/debug (PyTorch path)."""
+        if not self.token_pruning_enabled or self.token_pruner is None:
+            return {"enabled": False}
+        kept = self.token_pruner.core.last_kept_per_sample
+        return {
+            "enabled": True,
+            "noise_scale": self.token_pruner.noise_scale,
+            "keep_tokens": getattr(self.token_pruner.core, "keep_tokens", None),
+            "keep_ratio": getattr(self.token_pruner.core, "keep_ratio", None),
+            "last_kept_per_sample": None if kept is None else kept.detach().cpu().tolist(),
+        }
 
     def embed_suffix(self, state, noisy_actions, timestep):
         """Embed state, noisy_actions, timestep to prepare for Expert Gemma processing."""

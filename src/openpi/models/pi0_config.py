@@ -32,6 +32,16 @@ class Pi0Config(_model.BaseModelConfig):
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
+    # LightVLA-style visual token pruning (primarily used by the PyTorch model `PI0Pytorch`).
+    # JAX training can safely ignore these fields when pruning is not used.
+    token_pruning_enabled: bool = False
+    token_prune_noise_scale: float = 1.0  # LightVLA uses linear decay from 1.0 to 0.0
+    # Eval-time pruning budget. If both are None/default, pruning uses the LightVLA-style implicit selection.
+    # - `token_prune_keep_tokens`: keep exactly K patch tokens per image (after pruning).
+    # - `token_prune_keep_ratio`: keep `ceil(ratio * num_patches)` tokens per image (clamped to [1, num_patches]).
+    token_prune_keep_tokens: int | None = None
+    token_prune_keep_ratio: float | None = None
+
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)

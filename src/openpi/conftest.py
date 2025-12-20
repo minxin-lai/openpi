@@ -1,15 +1,19 @@
 import os
 
-import pynvml
 import pytest
 
 
 def set_jax_cpu_backend_if_no_gpu() -> None:
     try:
-        pynvml.nvmlInit()
-        pynvml.nvmlShutdown()
-    except pynvml.NVMLError:
-        # No GPU found.
+        import pynvml  # type: ignore
+
+        try:
+            pynvml.nvmlInit()
+            pynvml.nvmlShutdown()
+        except pynvml.NVMLError:
+            os.environ["JAX_PLATFORMS"] = "cpu"
+    except ModuleNotFoundError:
+        # Treat as "no GPU found" when pynvml isn't installed.
         os.environ["JAX_PLATFORMS"] = "cpu"
 
 

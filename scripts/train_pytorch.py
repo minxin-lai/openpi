@@ -400,6 +400,10 @@ def train_loop(config: _config.TrainConfig):
             paligemma_variant=getattr(config.model, "paligemma_variant", "gemma_2b"),
             action_expert_variant=getattr(config.model, "action_expert_variant", "gemma_300m"),
             pi05=getattr(config.model, "pi05", False),
+            token_pruning_enabled=getattr(config.model, "token_pruning_enabled", False),
+            token_prune_noise_scale=getattr(config.model, "token_prune_noise_scale", 0.0),
+            token_prune_keep_tokens=getattr(config.model, "token_prune_keep_tokens", None),
+            token_prune_keep_ratio=getattr(config.model, "token_prune_keep_ratio", None),
         )
     else:
         model_cfg = config.model
