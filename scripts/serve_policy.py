@@ -53,6 +53,10 @@ class Args:
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
+    
+    # Runtime overrides for model config (LightVLA token pruning)
+    token_prune_keep_ratio: float | None = None
+    token_prune_keep_tokens: int | None = None
 
 
 # Default checkpoints that should be used for each environment.
@@ -89,8 +93,26 @@ def create_policy(args: Args) -> _policy.Policy:
     """Create a policy from the given arguments."""
     match args.policy:
         case Checkpoint():
+            # Load the config
+            config = _config.get_config(args.policy.config)
+            
+            # Apply runtime overrides to model config if provided
+            if args.token_prune_keep_ratio is not None or args.token_prune_keep_tokens is not None:
+                # Use dataclasses.replace() to properly handle nested dataclasses
+                model_config_overrides = {}
+                if args.token_prune_keep_ratio is not None:
+                    model_config_overrides['token_prune_keep_ratio'] = args.token_prune_keep_ratio
+                if args.token_prune_keep_tokens is not None:
+                    model_config_overrides['token_prune_keep_tokens'] = args.token_prune_keep_tokens
+                
+                # Replace the model config with overrides
+                model_config = dataclasses.replace(config.model, **model_config_overrides)
+                
+                # Replace the training config with the modified model config
+                config = dataclasses.replace(config, model=model_config)
+            
             return _policy_config.create_trained_policy(
-                _config.get_config(args.policy.config), args.policy.dir, default_prompt=args.default_prompt
+                config, args.policy.dir, default_prompt=args.default_prompt
             )
         case Default():
             return create_default_policy(args.env, default_prompt=args.default_prompt)
