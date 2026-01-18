@@ -93,6 +93,9 @@ class PI0Pytorch(nn.Module):
         self.token_prune_keep_tokens = getattr(config, "token_prune_keep_tokens", None)
         self.token_prune_keep_ratio = getattr(config, "token_prune_keep_ratio", None)
         self._token_pruner_user_noise_scale: float | None = None
+        self._token_pruning_last_kept_per_image: list[torch.Tensor] | None = None
+        self._token_pruning_last_before_tokens_per_image: list[int] | None = None
+        self._last_prefix_unpruned_len: int | None = None
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -219,7 +222,7 @@ class PI0Pytorch(nn.Module):
 
     def embed_prefix(
         self, images, img_masks, lang_tokens, lang_masks
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Embed images with SigLIP and language tokens with embedding layer to prepare
         for PaliGemma transformer processing.
         """
@@ -245,26 +248,55 @@ class PI0Pytorch(nn.Module):
             else:
                 self.token_pruner.set_noise_scale(None)
 
-        # Process images (optionally prune using language context)
+        # Process images and concatenate patches across cameras before pruning (LightVLA-style).
+        img_embs: list[torch.Tensor] = []
+        img_patch_valid_masks: list[torch.Tensor] = []
+        original_tokens_total = 0
         for img, img_mask in zip(images, img_masks, strict=True):
 
             def image_embed_func(img):
                 return self.paligemma_with_expert.embed_image(img)
 
             img_emb = self._apply_checkpoint(image_embed_func, img)
+            bsize, num_img_tokens = img_emb.shape[:2]
+            original_tokens_total += int(num_img_tokens)
+            img_embs.append(img_emb)
+            img_patch_valid_masks.append(img_mask[:, None].expand(bsize, num_img_tokens))
 
+        # Concatenate all image patch embeddings along the token dimension.
+        all_img_emb = torch.cat(img_embs, dim=1) if len(img_embs) > 0 else None
+        all_img_valid = torch.cat(img_patch_valid_masks, dim=1) if len(img_patch_valid_masks) > 0 else None
+        # Unpruned prefix length for LightVLA-style position_ids (counts all patch + prompt tokens, including padding).
+        self._last_prefix_unpruned_len = int(original_tokens_total + lang_emb.shape[1])
+
+        if all_img_emb is not None:
             if self.token_pruning_enabled and self.token_pruner is not None:
-                img_emb, kept_mask = self.token_pruner.prune(img_emb, lang_emb)
-                bsize, num_img_embs = img_emb.shape[:2]
-                pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs) & kept_mask)
+                all_img_emb, kept_mask = self.token_pruner.prune(
+                    all_img_emb,
+                    lang_emb,
+                    task_token_mask=lang_masks,
+                    patch_token_mask=all_img_valid,
+                )
+                bsize, num_img_embs = all_img_emb.shape[:2]
+                pad_masks.append(kept_mask)
+
+                # Log pruning statistics during inference (eval mode)
+                if not self.training:
+                    kept_per_sample = kept_mask.sum(dim=1)
+                    avg_kept = kept_per_sample.float().mean().item()
+                    reduction = original_tokens_total - avg_kept
+                    reduction_pct = (reduction / original_tokens_total) * 100 if original_tokens_total > 0 else 0
+                    logging.info(
+                        f"[Token Pruning] Visual tokens: "
+                        f"before={original_tokens_total}, after={avg_kept:.1f}, "
+                        f"reduced={reduction:.1f} ({reduction_pct:.1f}%)"
+                    )
             else:
-                bsize, num_img_embs = img_emb.shape[:2]
-                pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
+                pad_masks.append(all_img_valid)
 
-            embs.append(img_emb)
-
+            embs.append(all_img_emb)
             # Create attention masks so that image tokens attend to each other
-            att_masks += [0] * num_img_embs
+            att_masks += [0] * all_img_emb.shape[1]
 
         embs.append(lang_emb)
         pad_masks.append(lang_masks)
@@ -281,7 +313,52 @@ class PI0Pytorch(nn.Module):
         bsize = pad_masks.shape[0]
         att_masks = att_masks[None, :].expand(bsize, len(att_masks))
 
-        return embs, pad_masks, att_masks
+        # Store last batch's token pruning stats (training only).
+        if self.training and self.token_pruning_enabled and self.token_pruner is not None:
+            if self.token_pruner.core.last_kept_per_sample is not None:
+                self._token_pruning_last_kept_per_image = [self.token_pruner.core.last_kept_per_sample.detach()]
+                self._token_pruning_last_before_tokens_per_image = [int(original_tokens_total)]
+            else:
+                self._token_pruning_last_kept_per_image = None
+                self._token_pruning_last_before_tokens_per_image = None
+
+        # LightVLA-style positions:
+        # - Train: align patch `position_ids` with the (noisy) selection indices used by straight-through selection.
+        # - Eval: gather original patch indices for physically kept tokens (may have gaps).
+        # - Prompt positions remain offset by the *unpruned* patch count.
+        if all_img_emb is None:
+            img_pos = torch.zeros((bsize, 0), device=pad_masks.device, dtype=torch.long)
+        elif self.token_pruning_enabled and self.token_pruner is not None:
+            if not self.training:
+                kept_indices = getattr(self.token_pruner.core, "last_kept_indices_padded", None)
+                if kept_indices is None:
+                    img_pos = (
+                        torch.arange(all_img_emb.shape[1], device=pad_masks.device, dtype=torch.long)[None, :]
+                        .expand(bsize, -1)
+                    )
+                else:
+                    img_pos = kept_indices.to(device=pad_masks.device, dtype=torch.long)
+            else:
+                selected_indices = getattr(self.token_pruner.core, "last_selected_indices_train", None)
+                if selected_indices is None:
+                    img_pos = (
+                        torch.arange(all_img_emb.shape[1], device=pad_masks.device, dtype=torch.long)[None, :]
+                        .expand(bsize, -1)
+                    )
+                else:
+                    img_pos = selected_indices.to(device=pad_masks.device, dtype=torch.long)
+        else:
+            img_pos = (
+                torch.arange(all_img_emb.shape[1], device=pad_masks.device, dtype=torch.long)[None, :].expand(bsize, -1)
+            )
+
+        lang_pos = (
+            torch.arange(lang_emb.shape[1], device=pad_masks.device, dtype=torch.long)[None, :].expand(bsize, -1)
+            + int(original_tokens_total)
+        )
+        prefix_position_ids = torch.cat([img_pos, lang_pos], dim=1)
+
+        return embs, pad_masks, att_masks, prefix_position_ids
 
     def set_token_pruner_noise_scale(self, noise_scale: float | None) -> None:
         """Override pruning noise scale (training only). Use None to revert to config default."""
@@ -304,13 +381,79 @@ class PI0Pytorch(nn.Module):
         if not self.token_pruning_enabled or self.token_pruner is None:
             return {"enabled": False}
         kept = self.token_pruner.core.last_kept_per_sample
-        return {
+        kept_noisy = getattr(self.token_pruner.core, "last_kept_per_sample_noisy", None)
+        task_valid_len = getattr(self.token_pruner.core, "last_task_valid_len", None)
+        task_attn_masked_len = getattr(self.token_pruner.core, "last_task_attn_masked_len", None)
+        argmax_union_det = getattr(self.token_pruner.core, "last_argmax_union_det", None)
+        argmax_union_noisy = getattr(self.token_pruner.core, "last_argmax_union_noisy", None)
+        argmax_top1_det = getattr(self.token_pruner.core, "last_argmax_top1_share_det", None)
+        argmax_top1_noisy = getattr(self.token_pruner.core, "last_argmax_top1_share_noisy", None)
+        patches_std_mean = getattr(self.token_pruner.core, "last_patches_std_mean", None)
+        task_std_mean = getattr(self.token_pruner.core, "last_task_std_mean", None)
+        # New diagnostics: queries before/after RMSNorm + cosine similarity
+        queries_before_norm_std = getattr(self.token_pruner.core, "last_queries_before_norm_std_mean", None)
+        queries_after_norm_std = getattr(self.token_pruner.core, "last_queries_after_norm_std_mean", None)
+        queries_before_norm_cosine = getattr(self.token_pruner.core, "last_queries_before_norm_cosine_sim", None)
+        queries_after_norm_cosine = getattr(self.token_pruner.core, "last_queries_after_norm_cosine_sim", None)
+        score_abs_max_det = getattr(self.token_pruner.core, "last_score_abs_max_det", None)
+        score_top1_gap_mean_det = getattr(self.token_pruner.core, "last_score_top1_gap_mean_det", None)
+        stats: dict = {
             "enabled": True,
             "noise_scale": self.token_pruner.noise_scale,
             "keep_tokens": getattr(self.token_pruner.core, "keep_tokens", None),
             "keep_ratio": getattr(self.token_pruner.core, "keep_ratio", None),
             "last_kept_per_sample": None if kept is None else kept.detach().cpu().tolist(),
+            "last_kept_per_sample_noisy": None if kept_noisy is None else kept_noisy.detach().cpu().tolist(),
+            "last_task_valid_len": None if task_valid_len is None else task_valid_len.detach().cpu().tolist(),
+            "last_task_attn_masked_len": None
+            if task_attn_masked_len is None
+            else task_attn_masked_len.detach().cpu().tolist(),
+            "last_argmax_union_det": None if argmax_union_det is None else argmax_union_det.detach().cpu().tolist(),
+            "last_argmax_union_noisy": None if argmax_union_noisy is None else argmax_union_noisy.detach().cpu().tolist(),
+            "last_argmax_top1_share_det": None if argmax_top1_det is None else argmax_top1_det.detach().cpu().tolist(),
+            "last_argmax_top1_share_noisy": None if argmax_top1_noisy is None else argmax_top1_noisy.detach().cpu().tolist(),
+            "last_patches_std_mean": None if patches_std_mean is None else patches_std_mean.detach().cpu().tolist(),
+            "last_task_std_mean": None if task_std_mean is None else task_std_mean.detach().cpu().tolist(),
+            # Queries diagnostics: before/after RMSNorm
+            "last_queries_before_norm_std_mean": None if queries_before_norm_std is None else queries_before_norm_std.detach().cpu().tolist(),
+            "last_queries_after_norm_std_mean": None if queries_after_norm_std is None else queries_after_norm_std.detach().cpu().tolist(),
+            "last_queries_before_norm_cosine_sim": None if queries_before_norm_cosine is None else queries_before_norm_cosine.detach().cpu().tolist(),
+            "last_queries_after_norm_cosine_sim": None if queries_after_norm_cosine is None else queries_after_norm_cosine.detach().cpu().tolist(),
+            "last_score_abs_max_det": None if score_abs_max_det is None else score_abs_max_det.detach().cpu().tolist(),
+            "last_score_top1_gap_mean_det": None
+            if score_top1_gap_mean_det is None
+            else score_top1_gap_mean_det.detach().cpu().tolist(),
         }
+
+        kept_per_image = self._token_pruning_last_kept_per_image
+        before_per_image = self._token_pruning_last_before_tokens_per_image
+        if kept_per_image is not None and len(kept_per_image) > 0:
+            per_image_mean = [float(x.float().mean().item()) for x in kept_per_image]
+            per_image_min = [int(x.min().item()) for x in kept_per_image]
+            per_image_max = [int(x.max().item()) for x in kept_per_image]
+            stats.update(
+                {
+                    "last_kept_per_image_mean": per_image_mean,
+                    "last_kept_per_image_min": per_image_min,
+                    "last_kept_per_image_max": per_image_max,
+                }
+            )
+            if before_per_image is not None and len(before_per_image) == len(per_image_mean):
+                stats["last_before_tokens_per_image"] = before_per_image
+                stats["last_kept_ratio_per_image_mean"] = [
+                    (m / b) if b > 0 else 0.0 for m, b in zip(per_image_mean, before_per_image, strict=True)
+                ]
+                overall_before = sum(before_per_image)
+                overall_kept = sum(per_image_mean)
+                stats["last_kept_ratio_overall_mean"] = (overall_kept / overall_before) if overall_before > 0 else 0.0
+
+                # Convenience aliases for cross-camera pruning: treat the concatenated image patches as "overall".
+                # When pruning is done per-image, this remains the sum over images.
+                stats["last_kept_overall_mean"] = float(overall_kept)
+                stats["last_kept_overall_min"] = int(sum(per_image_min))
+                stats["last_kept_overall_max"] = int(sum(per_image_max))
+
+        return stats
 
     def embed_suffix(self, state, noisy_actions, timestep):
         """Embed state, noisy_actions, timestep to prepare for Expert Gemma processing."""
@@ -405,7 +548,9 @@ class PI0Pytorch(nn.Module):
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        prefix_embs, prefix_pad_masks, prefix_att_masks, prefix_position_ids = self.embed_prefix(
+            images, img_masks, lang_tokens, lang_masks
+        )
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, time)
         if (
             self.paligemma_with_expert.paligemma.language_model.layers[0].self_attn.q_proj.weight.dtype
@@ -418,7 +563,14 @@ class PI0Pytorch(nn.Module):
         att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
 
         att_2d_masks = make_att_2d_masks(pad_masks, att_masks)
-        position_ids = torch.cumsum(pad_masks, dim=1) - 1
+        if self._last_prefix_unpruned_len is None:
+            raise RuntimeError("Expected `_last_prefix_unpruned_len` to be set by `embed_prefix()`.")
+        suffix_len = suffix_pad_masks.shape[1]
+        suffix_position_ids = (
+            torch.arange(suffix_len, device=pad_masks.device, dtype=torch.long)[None, :].expand(pad_masks.shape[0], -1)
+            + int(self._last_prefix_unpruned_len)
+        )
+        position_ids = torch.cat([prefix_position_ids.to(dtype=torch.long), suffix_position_ids], dim=1)
 
         # Prepare attention masks
         att_2d_masks_4d = self._prepare_attention_masks_4d(att_2d_masks)
@@ -460,9 +612,10 @@ class PI0Pytorch(nn.Module):
 
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
 
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        prefix_embs, prefix_pad_masks, prefix_att_masks, prefix_position_ids = self.embed_prefix(
+            images, img_masks, lang_tokens, lang_masks
+        )
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
-        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 
         # Compute image and language key value cache
         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
@@ -470,7 +623,7 @@ class PI0Pytorch(nn.Module):
 
         _, past_key_values = self.paligemma_with_expert.forward(
             attention_mask=prefix_att_2d_masks_4d,
-            position_ids=prefix_position_ids,
+            position_ids=prefix_position_ids.to(dtype=torch.long),
             past_key_values=None,
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
@@ -517,8 +670,13 @@ class PI0Pytorch(nn.Module):
 
         full_att_2d_masks = torch.cat([prefix_pad_2d_masks, suffix_att_2d_masks], dim=2)
 
-        prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
-        position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
+        if self._last_prefix_unpruned_len is None:
+            raise RuntimeError("Expected `_last_prefix_unpruned_len` to be set by `embed_prefix()`.")
+        suffix_len = suffix_pad_masks.shape[1]
+        position_ids = (
+            torch.arange(suffix_len, device=suffix_pad_masks.device, dtype=torch.long)[None, :].expand(batch_size, -1)
+            + int(self._last_prefix_unpruned_len)
+        )
 
         # Prepare attention masks
         full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)

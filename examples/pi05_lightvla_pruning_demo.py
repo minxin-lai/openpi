@@ -65,8 +65,8 @@ def main():
     model_yes = PI0Pytorch(cfg_yes).to(device).eval()
 
     with torch.inference_mode():
-        embs_no, pad_no, _ = model_no.embed_prefix(images, img_masks, lang_tokens, lang_masks)
-        embs_yes, pad_yes, _ = model_yes.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        embs_no, pad_no, _, _ = model_no.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        embs_yes, pad_yes, _, _ = model_yes.embed_prefix(images, img_masks, lang_tokens, lang_masks)
 
     print("=== Prefix Token Lengths (eval) ===")
     print(f"no_prune:  tokens={embs_no.shape[1]}  pad_true={int(pad_no.sum().item())}")

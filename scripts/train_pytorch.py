@@ -529,6 +529,15 @@ def train_loop(config: _config.TrainConfig):
             for pg in optim.param_groups:
                 pg["lr"] = lr_schedule(global_step)
 
+            # Match upstream LightVLA training: linearly decay pruning noise_scale from 1 -> 0 over training.
+            # This encourages exploration early and stabilizes selection later.
+            model_to_configure = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+            if getattr(model_to_configure, "token_pruning_enabled", False) and hasattr(
+                model_to_configure, "set_token_pruner_noise_scale"
+            ):
+                frac = global_step / max(1, int(config.num_train_steps))
+                model_to_configure.set_token_pruner_noise_scale(max(0.0, 1.0 - float(frac)))
+
             # Forward pass
             losses = model(observation, actions)
             # Ensure losses is a tensor and handle different return types
@@ -561,11 +570,82 @@ def train_loop(config: _config.TrainConfig):
 
             # Collect stats
             if is_main:
+                model_to_log = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+                token_stats = (
+                    model_to_log.get_token_pruning_stats() if hasattr(model_to_log, "get_token_pruning_stats") else {}
+                )
+                token_payload = {}
+                if token_stats.get("enabled"):
+                    if token_stats.get("last_kept_ratio_overall_mean") is not None:
+                        token_payload["prune/kept_ratio_overall_mean"] = token_stats.get("last_kept_ratio_overall_mean")
+                    # Overall tokens (for cross-camera pruning we report this as the primary metric).
+                    if token_stats.get("last_kept_overall_mean") is not None:
+                        token_payload["prune/kept_tokens_overall_mean"] = token_stats.get("last_kept_overall_mean")
+                    if token_stats.get("last_kept_overall_min") is not None:
+                        token_payload["prune/kept_tokens_overall_min"] = token_stats.get("last_kept_overall_min")
+                    if token_stats.get("last_kept_overall_max") is not None:
+                        token_payload["prune/kept_tokens_overall_max"] = token_stats.get("last_kept_overall_max")
+                    if token_stats.get("last_kept_per_sample_noisy") is not None:
+                        vals = token_stats["last_kept_per_sample_noisy"]
+                        token_payload["prune/kept_tokens_overall_mean_noisy"] = float(sum(vals) / max(1, len(vals)))
+                    # Debug: task token length + argmax vote concentration (helps diagnose collapse to ~1-3 tokens).
+                    if token_stats.get("last_task_valid_len") is not None:
+                        vals = token_stats["last_task_valid_len"]
+                        token_payload["prune/task_valid_len_mean"] = float(sum(vals) / max(1, len(vals)))
+                    if token_stats.get("last_task_attn_masked_len") is not None:
+                        vals = token_stats["last_task_attn_masked_len"]
+                        token_payload["prune/task_attn_masked_len_mean"] = float(sum(vals) / max(1, len(vals)))
+                    if token_stats.get("last_argmax_union_det") is not None:
+                        vals = token_stats["last_argmax_union_det"]
+                        token_payload["prune/argmax_union_mean"] = float(sum(vals) / max(1, len(vals)))
+                    if token_stats.get("last_argmax_union_noisy") is not None:
+                        vals = token_stats["last_argmax_union_noisy"]
+                        token_payload["prune/argmax_union_mean_noisy"] = float(sum(vals) / max(1, len(vals)))
+                    if token_stats.get("last_argmax_top1_share_det") is not None:
+                        vals = token_stats["last_argmax_top1_share_det"]
+                        token_payload["prune/argmax_top1_share_mean"] = float(sum(vals) / max(1, len(vals)))
+                    if token_stats.get("last_argmax_top1_share_noisy") is not None:
+                        vals = token_stats["last_argmax_top1_share_noisy"]
+                        token_payload["prune/argmax_top1_share_mean_noisy"] = float(sum(vals) / max(1, len(vals)))
+                    if token_stats.get("last_patches_std_mean") is not None:
+                        vals = token_stats["last_patches_std_mean"]
+                        token_payload["prune/patches_std_mean"] = float(sum(vals) / max(1, len(vals)))
+                    if token_stats.get("last_task_std_mean") is not None:
+                        vals = token_stats["last_task_std_mean"]
+                        token_payload["prune/task_std_mean"] = float(sum(vals) / max(1, len(vals)))
+                    # Queries diagnostics: before/after RMSNorm + cosine similarity
+                    if token_stats.get("last_queries_before_norm_std_mean") is not None:
+                        vals = token_stats["last_queries_before_norm_std_mean"]
+                        token_payload["prune/queries_before_norm_std_mean"] = float(sum(vals) / max(1, len(vals)))
+                    if token_stats.get("last_queries_after_norm_std_mean") is not None:
+                        vals = token_stats["last_queries_after_norm_std_mean"]
+                        token_payload["prune/queries_after_norm_std_mean"] = float(sum(vals) / max(1, len(vals)))
+                    if token_stats.get("last_queries_before_norm_cosine_sim") is not None:
+                        vals = token_stats["last_queries_before_norm_cosine_sim"]
+                        token_payload["prune/queries_before_norm_cosine_mean"] = float(sum(vals) / max(1, len(vals)))
+                    if token_stats.get("last_queries_after_norm_cosine_sim") is not None:
+                        vals = token_stats["last_queries_after_norm_cosine_sim"]
+                        token_payload["prune/queries_after_norm_cosine_mean"] = float(sum(vals) / max(1, len(vals)))
+                    if token_stats.get("last_score_abs_max_det") is not None:
+                        vals = token_stats["last_score_abs_max_det"]
+                        token_payload["prune/score_abs_max_det_mean"] = float(sum(vals) / max(1, len(vals)))
+                    if token_stats.get("last_score_top1_gap_mean_det") is not None:
+                        vals = token_stats["last_score_top1_gap_mean_det"]
+                        token_payload["prune/score_top1_gap_det_mean"] = float(sum(vals) / max(1, len(vals)))
+                    # Backwards-compatible per-image stats (only present when computed).
+                    for i, m in enumerate(token_stats.get("last_kept_per_image_mean", []) or []):
+                        token_payload[f"prune/img{i}_kept_mean"] = m
+                    for i, m in enumerate(token_stats.get("last_kept_per_image_min", []) or []):
+                        token_payload[f"prune/img{i}_kept_min"] = m
+                    for i, m in enumerate(token_stats.get("last_kept_per_image_max", []) or []):
+                        token_payload[f"prune/img{i}_kept_max"] = m
+
                 infos.append(
                     {
                         "loss": loss.item(),
                         "learning_rate": optim.param_groups[0]["lr"],
                         "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
+                        **token_payload,
                     }
                 )
 
@@ -583,11 +663,18 @@ def train_loop(config: _config.TrainConfig):
                     ]
                     if len(vals) > 0:
                         avg_grad_norm = sum(vals) / len(vals)
-                logging.info(
+                msg = (
                     f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} grad_norm={avg_grad_norm:.2f} time={elapsed:.1f}s"
                     if avg_grad_norm is not None
                     else f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} time={elapsed:.1f}s"
                 )
+                # Token pruning telemetry (averaged over log interval).
+                if any(k.startswith("prune/") for k in infos[0].keys()):
+                    for k in sorted({k for info in infos for k in info.keys() if k.startswith("prune/")}):
+                        vals = [info.get(k) for info in infos if info.get(k) is not None]
+                        if len(vals) > 0:
+                            msg += f" {k}={sum(vals)/len(vals):.4f}"
+                logging.info(msg)
 
                 # Log to wandb
                 if config.wandb_enabled and len(infos) > 0:
@@ -599,6 +686,11 @@ def train_loop(config: _config.TrainConfig):
                     }
                     if avg_grad_norm is not None:
                         log_payload["grad_norm"] = avg_grad_norm
+                    # Add pruning metrics (averaged over log interval).
+                    for k in {k for info in infos for k in info.keys() if k.startswith("prune/")}:
+                        vals = [info.get(k) for info in infos if info.get(k) is not None]
+                        if len(vals) > 0:
+                            log_payload[k] = sum(vals) / len(vals)
                     wandb.log(log_payload, step=global_step)
 
                 start_time = time.time()
