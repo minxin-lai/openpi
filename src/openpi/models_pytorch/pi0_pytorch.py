@@ -109,6 +109,8 @@ class PI0Pytorch(nn.Module):
             self.action_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
 
         torch.set_float32_matmul_precision("high")
+        # Keep an eager (non-compiled) handle for tracing/debugging; torch.compile often disables forward hooks.
+        self._sample_actions_eager = self.sample_actions
         self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
 
         # Initialize gradient checkpointing flag

@@ -99,6 +99,7 @@ def eval_libero(args: Args) -> None:
             # Setup
             t = 0
             replay_images = []
+            query_idx = 0
 
             logging.info(f"Starting episode {task_episodes+1}...")
             while t < max_steps + args.num_steps_wait:
@@ -138,6 +139,13 @@ def eval_libero(args: Args) -> None:
                                 )
                             ),
                             "prompt": str(task_description),
+                            "__trace_meta__": {
+                                "task_suite": str(args.task_suite_name),
+                                "task_id": int(task_id),
+                                "episode_idx": int(episode_idx),
+                                "step_idx": int(t),
+                                "query_idx": int(query_idx),
+                            },
                         }
 
                         # Query model to get action
@@ -146,6 +154,7 @@ def eval_libero(args: Args) -> None:
                             len(action_chunk) >= args.replan_steps
                         ), f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
                         action_plan.extend(action_chunk[: args.replan_steps])
+                        query_idx += 1
 
                     action = action_plan.popleft()
 
