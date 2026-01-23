@@ -22,14 +22,16 @@ Multi-Node Training:
     scripts/train_pytorch.py <config_name> --exp_name=<run_name> --save_interval <interval>
 
 """
-
+import argparse
 import dataclasses
 import gc
 import logging
 import os
 import platform
 import shutil
+import sys
 import time
+from pathlib import Path
 
 import jax
 import numpy as np
@@ -47,7 +49,65 @@ import openpi.training.config as _config
 import openpi.training.data_loader as _data
 
 
-def init_logging():
+def _parse_extra_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    """
+    Parse vla-opt integration and logging flags, and return (parsed, remaining) where remaining is passed to tyro.
+    """
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument(
+        "--log_level",
+        "--log-level",
+        default="INFO",
+        help="Logging level (DEBUG/INFO/WARNING/ERROR).",
+    )
+
+    parser.add_argument(
+        "--stage_a",
+        "--stage-a",
+        action="store_true",
+        default=False,
+        help="Enable VLA-OPT Stage-A FiLM.",
+    )
+    parser.add_argument(
+        "--no_stage_a",
+        "--no-stage-a",
+        action="store_false",
+        dest="stage_a",
+        help="Disable VLA-OPT Stage-A FiLM.",
+    )
+
+    parser.add_argument(
+        "--stage_a_freeze_base",
+        "--stage-a-freeze-base",
+        action="store_true",
+        default=True,
+        help="Freeze base model; train only FiLM params (Stage A).",
+    )
+    parser.add_argument(
+        "--no_stage_a_freeze_base",
+        "--no-stage-a-freeze-base",
+        action="store_false",
+        dest="stage_a_freeze_base",
+        help="Do not freeze base model when Stage A is enabled.",
+    )
+
+    parser.add_argument(
+        "--stage_a_num_film_blocks",
+        "--stage-a-num-film-blocks",
+        type=int,
+        default=4,
+        help="Wrap last N SigLIP blocks.",
+    )
+    args, remaining = parser.parse_known_args(argv)
+    return args, remaining
+
+
+def init_logging(*, level: str | None = None) -> None:
+    level_env = (level or "INFO").strip().upper()
+    level = getattr(logging, level_env, None)
+    if not isinstance(level, int):
+        raise ValueError(f"Invalid log_level={level_env!r} (expected e.g. INFO/DEBUG)")
+
     level_mapping = {"DEBUG": "D", "INFO": "I", "WARNING": "W", "ERROR": "E", "CRITICAL": "C"}
 
     class CustomFormatter(logging.Formatter):
@@ -60,7 +120,7 @@ def init_logging():
         datefmt="%H:%M:%S",
     )
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    logger.setLevel(level)
     if not logger.handlers:
         ch = logging.StreamHandler()
         ch.setFormatter(formatter)
@@ -306,10 +366,12 @@ def log_memory_usage(device, step, phase="unknown"):
     )
 
 
-def train_loop(config: _config.TrainConfig):
+def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
     use_ddp, local_rank, device = setup_ddp()
     is_main = (not use_ddp) or (dist.get_rank() == 0)
     set_seed(config.seed, local_rank)
+    if is_main:
+        logging.info("Device: %s", device)
 
     # Initialize checkpoint directory and wandb
     resuming = False
@@ -408,6 +470,40 @@ def train_loop(config: _config.TrainConfig):
 
     model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
 
+    # Load weights from weight_loader if specified (for fine-tuning).
+    #
+    # IMPORTANT: do this before any Stage-A wrapping, otherwise wrapped modules
+    # introduce a ".block." prefix in state_dict keys and strict loading fails.
+    if config.pytorch_weight_path is not None:
+        logging.info("Loading weights from: %s", config.pytorch_weight_path)
+        model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
+        safetensors.torch.load_model(model, model_path)
+        logging.info("Loaded PyTorch weights from %s", config.pytorch_weight_path)
+
+    # Optional: VLA-OPT Stage-A FiLM integration (Pi0.5 only).
+    stage_a_handle = None
+    if bool(extra.stage_a):
+        # Allow importing vla-opt (mono-repo) when this OpenPI copy lives under `third_party/openpi`.
+        repo_root = Path(__file__).resolve().parents[3]
+        vla_src = repo_root / "src"
+        if not vla_src.exists():
+            raise FileNotFoundError(f"Stage-A enabled but vla-opt src not found at: {vla_src}")
+        if str(vla_src) not in sys.path:
+            sys.path.insert(0, str(vla_src))
+
+        from vla_opt.integrations.openpi_pi05 import OpenPIStageAFiLMConfig, enable_stage_a_film_on_pi05
+
+        num_film_blocks = int(extra.stage_a_num_film_blocks)
+        stage_a_handle = enable_stage_a_film_on_pi05(model, cfg=OpenPIStageAFiLMConfig(num_film_blocks=num_film_blocks))
+        actual = len(stage_a_handle.film_generators)
+        film_params = sum(int(p.numel()) for p in stage_a_handle.trainable_parameters())
+        logging.info(
+            "VLA-OPT Stage-A FiLM enabled: num_film_blocks=%s (actual_wrapped=%s) film_params=%s",
+            num_film_blocks,
+            actual,
+            film_params,
+        )
+
     if hasattr(model, "gradient_checkpointing_enable"):
         enable_gradient_checkpointing = True
         model.gradient_checkpointing_enable()
@@ -438,16 +534,6 @@ def train_loop(config: _config.TrainConfig):
             static_graph=world_size >= 8,  # Enable for 8+ GPUs
         )
 
-    # Load weights from weight_loader if specified (for fine-tuning)
-    if config.pytorch_weight_path is not None:
-        logging.info(f"Loading weights from: {config.pytorch_weight_path}")
-
-        model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
-        safetensors.torch.load_model(
-            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model), model_path
-        )
-        logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
-
     # Optimizer + learning rate schedule from config
     warmup_steps = config.lr_schedule.warmup_steps
     peak_lr = config.lr_schedule.peak_lr
@@ -455,8 +541,21 @@ def train_loop(config: _config.TrainConfig):
     end_lr = config.lr_schedule.decay_lr
 
     # Create optimizer with config parameters
+    if stage_a_handle is not None and bool(extra.stage_a_freeze_base):
+        for p in model.parameters():
+            p.requires_grad = False
+        for p in stage_a_handle.trainable_parameters():
+            p.requires_grad = True
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        if len(trainable_params) == 0:
+            raise ValueError("Stage-A enabled but no trainable params after freezing base")
+        optim_params = trainable_params
+        logging.info("VLA-OPT Stage-A: froze base model; trainable_params=%s", sum(int(p.numel()) for p in trainable_params))
+    else:
+        optim_params = list(model.parameters())
+
     optim = torch.optim.AdamW(
-        model.parameters(),
+        optim_params,
         lr=peak_lr,
         betas=(config.optimizer.b1, config.optimizer.b2),
         eps=config.optimizer.eps,
@@ -526,6 +625,21 @@ def train_loop(config: _config.TrainConfig):
                 pg["lr"] = lr_schedule(global_step)
 
             # Forward pass
+            if stage_a_handle is not None:
+                raw_model = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+                lang_tokens = getattr(observation, "tokenized_prompt", None)
+                if lang_tokens is None:
+                    raise ValueError("Stage-A enabled but observation.tokenized_prompt is None")
+                text_tokens = raw_model.paligemma_with_expert.embed_language_tokens(lang_tokens)
+                stage_a_handle.set_condition(text_tokens)
+                if is_main and global_step == 0 and logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.debug(
+                        "VLA-OPT Stage-A cond_tokens: shape=%s dtype=%s device=%s",
+                        tuple(text_tokens.shape),
+                        str(text_tokens.dtype),
+                        str(text_tokens.device),
+                    )
+
             losses = model(observation, actions)
             # Ensure losses is a tensor and handle different return types
             if isinstance(losses, list | tuple):
@@ -538,12 +652,17 @@ def train_loop(config: _config.TrainConfig):
             # Backward pass
             loss.backward()
 
+            if stage_a_handle is not None:
+                # IMPORTANT: keep condition set during backward when using gradient checkpointing
+                # (checkpoint recomputes forward in backward).
+                stage_a_handle.clear_condition()
+
             # Log memory usage after backward pass
             if global_step < 5 and is_main and torch.cuda.is_available():
                 log_memory_usage(device, global_step, "after_backward")
 
             # Gradient clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optimizer.clip_gradient_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(optim_params, max_norm=config.optimizer.clip_gradient_norm)
 
             # Optimizer step
             optim.step()
@@ -557,13 +676,25 @@ def train_loop(config: _config.TrainConfig):
 
             # Collect stats
             if is_main:
-                infos.append(
-                    {
-                        "loss": loss.item(),
-                        "learning_rate": optim.param_groups[0]["lr"],
-                        "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
-                    }
+                info = {
+                    "loss": loss.item(),
+                    "learning_rate": optim.param_groups[0]["lr"],
+                    "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
+                }
+                collect_stage_a_stats = stage_a_handle is not None and (
+                    config.wandb_enabled or logging.getLogger().isEnabledFor(logging.DEBUG)
                 )
+                if collect_stage_a_stats:
+                    with torch.no_grad():
+                        gamma_abs = []
+                        beta_abs = []
+                        for film in stage_a_handle.film_generators:
+                            g, b = film(text_tokens)
+                            gamma_abs.append(float(g.abs().mean().item()))
+                            beta_abs.append(float(b.abs().mean().item()))
+                        info["stage_a_gamma_abs_mean"] = sum(gamma_abs) / max(1, len(gamma_abs))
+                        info["stage_a_beta_abs_mean"] = sum(beta_abs) / max(1, len(beta_abs))
+                infos.append(info)
 
             if is_main and (global_step % config.log_interval == 0):
                 elapsed = time.time() - start_time
@@ -584,6 +715,15 @@ def train_loop(config: _config.TrainConfig):
                     if avg_grad_norm is not None
                     else f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} time={elapsed:.1f}s"
                 )
+                if stage_a_handle is not None and logging.getLogger().isEnabledFor(logging.DEBUG):
+                    vals_g = [info.get("stage_a_gamma_abs_mean") for info in infos if "stage_a_gamma_abs_mean" in info]
+                    vals_b = [info.get("stage_a_beta_abs_mean") for info in infos if "stage_a_beta_abs_mean" in info]
+                    if len(vals_g) > 0 and len(vals_b) > 0:
+                        logging.debug(
+                            "VLA-OPT Stage-A stats: gamma_abs_mean=%.3e beta_abs_mean=%.3e",
+                            sum(vals_g) / len(vals_g),
+                            sum(vals_b) / len(vals_b),
+                        )
 
                 # Log to wandb
                 if config.wandb_enabled and len(infos) > 0:
@@ -595,6 +735,11 @@ def train_loop(config: _config.TrainConfig):
                     }
                     if avg_grad_norm is not None:
                         log_payload["grad_norm"] = avg_grad_norm
+                    vals_g = [info.get("stage_a_gamma_abs_mean") for info in infos if "stage_a_gamma_abs_mean" in info]
+                    vals_b = [info.get("stage_a_beta_abs_mean") for info in infos if "stage_a_beta_abs_mean" in info]
+                    if len(vals_g) > 0 and len(vals_b) > 0:
+                        log_payload["stage_a_gamma_abs_mean"] = sum(vals_g) / len(vals_g)
+                        log_payload["stage_a_beta_abs_mean"] = sum(vals_b) / len(vals_b)
                     wandb.log(log_payload, step=global_step)
 
                 start_time = time.time()
@@ -623,9 +768,11 @@ def train_loop(config: _config.TrainConfig):
 
 
 def main():
-    init_logging()
+    extra, remaining = _parse_extra_args(sys.argv[1:])
+    init_logging(level=extra.log_level)
+    sys.argv = [sys.argv[0], *remaining]
     config = _config.cli()
-    train_loop(config)
+    train_loop(config, extra=extra)
 
 
 if __name__ == "__main__":
