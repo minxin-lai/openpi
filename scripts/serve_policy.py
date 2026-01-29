@@ -1,6 +1,7 @@
 import dataclasses
 import enum
 import logging
+import os
 import socket
 import sys
 from pathlib import Path
@@ -14,8 +15,9 @@ from openpi.training import config as _config
 
 # Allow importing repo-root `tracer/` when this OpenPI copy lives under `third_party/openpi`.
 _repo_root = Path(__file__).resolve().parents[3]
-if (_repo_root / "tracer").exists() and str(_repo_root) not in sys.path:
-    sys.path.insert(0, str(_repo_root))
+for p in (_repo_root, _repo_root / "src"):
+    if p.exists() and str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
 
 class EnvMode(enum.Enum):
@@ -76,6 +78,20 @@ class Args:
     # Dump every N inferences (1 means dump every inference).
     trace_every_n: int = 1
 
+    # ============================
+    # VLA-OPT (Pi0.5 PyTorch wrapper)
+    # ============================
+    # IMPORTANT: these options must match how the checkpoint was trained/saved.
+    vla_opt_ve_film: bool = False
+    vla_opt_ve_film_num_blocks: int = 4
+
+    vla_opt_ste_prune: bool = False
+    vla_opt_ste_prune_k: int = 64
+    vla_opt_ste_prune_layer: int | None = None
+    vla_opt_ste_prune_stage: str = "gather"
+    vla_opt_ste_prune_tau: float = 1.0
+    vla_opt_ste_prune_score_mlp_hidden_dim: int | None = None
+
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
 
@@ -122,6 +138,46 @@ def create_policy(args: Args) -> _policy.Policy:
 
 
 def main(args: Args) -> None:
+    if bool(args.vla_opt_ve_film) or bool(args.vla_opt_ste_prune):
+        # Ensure vla-opt is importable when running inside `third_party/openpi/`.
+        vla_src = _repo_root / "src"
+        if not vla_src.exists():
+            raise FileNotFoundError(f"VLA-OPT enabled but vla-opt src not found at: {vla_src}")
+        if str(vla_src) not in sys.path:
+            sys.path.insert(0, str(vla_src))
+
+        # Pass wrapper config to OpenPI's PyTorch loader via env vars (read in `openpi.models.model.BaseModelConfig.load_pytorch`).
+        if bool(args.vla_opt_ve_film):
+            os.environ["VLA_OPT_VE_FILM"] = "1"
+            os.environ["VLA_OPT_VE_FILM_NUM_BLOCKS"] = str(int(args.vla_opt_ve_film_num_blocks))
+        if bool(args.vla_opt_ste_prune):
+            stage = str(args.vla_opt_ste_prune_stage).strip().lower()
+            if stage in {"1", "stage1"}:
+                stage = "mask"
+            if stage in {"2", "stage2"}:
+                stage = "gather"
+            if stage not in {"mask", "gather"}:
+                raise ValueError(f"Invalid --vla-opt-ste-prune-stage={args.vla_opt_ste_prune_stage!r} (expected mask/gather)")
+            os.environ["VLA_OPT_STE_PRUNE"] = "1"
+            os.environ["VLA_OPT_STE_PRUNE_K"] = str(int(args.vla_opt_ste_prune_k))
+            os.environ["VLA_OPT_STE_PRUNE_STAGE"] = stage
+            os.environ["VLA_OPT_STE_PRUNE_TAU"] = str(float(args.vla_opt_ste_prune_tau))
+            if args.vla_opt_ste_prune_layer is not None:
+                os.environ["VLA_OPT_STE_PRUNE_LAYER"] = str(int(args.vla_opt_ste_prune_layer))
+            if args.vla_opt_ste_prune_score_mlp_hidden_dim is not None:
+                os.environ["VLA_OPT_STE_PRUNE_SCORE_MLP_HIDDEN_DIM"] = str(int(args.vla_opt_ste_prune_score_mlp_hidden_dim))
+
+        logging.info(
+            "VLA-OPT enabled: ve_film=%s(num_blocks=%s) ste_prune=%s(k=%s stage=%s layer=%s tau=%.3g)",
+            bool(args.vla_opt_ve_film),
+            int(args.vla_opt_ve_film_num_blocks),
+            bool(args.vla_opt_ste_prune),
+            int(args.vla_opt_ste_prune_k),
+            str(args.vla_opt_ste_prune_stage),
+            str(args.vla_opt_ste_prune_layer),
+            float(args.vla_opt_ste_prune_tau),
+        )
+
     policy = create_policy(args)
     policy_metadata = policy.metadata
 

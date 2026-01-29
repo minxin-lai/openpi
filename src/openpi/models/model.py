@@ -3,6 +3,7 @@ from collections.abc import Sequence
 import dataclasses
 import enum
 import logging
+import os
 import pathlib
 from typing import Generic, TypeVar
 
@@ -243,6 +244,75 @@ class BaseModelConfig(abc.ABC):
     def load_pytorch(self, train_config, weight_path: str):
         logger.info(f"train_config: {train_config}")
         model = pi0_pytorch.PI0Pytorch(config=train_config.model)
+
+        # Optional VLA-OPT wrappers (for checkpoints saved with wrapped SigLIP layers).
+        #
+        # We intentionally keep this opt-in via env vars so upstream OpenPI usage is unaffected.
+        # `scripts/serve_policy.py` sets these env vars when the corresponding CLI flags are passed.
+        def _env_flag(name: str) -> bool:
+            v = os.environ.get(name, "").strip().lower()
+            return v in {"1", "true", "yes", "y", "on"}
+
+        if _env_flag("VLA_OPT_VE_FILM") or _env_flag("VLA_OPT_STE_PRUNE"):
+            try:
+                from vla_opt.integrations.openpi_pi05 import (
+                    OpenPIStageAFiLMConfig,
+                    OpenPIStePruningConfig,
+                    enable_stage_a_film_on_pi05,
+                    enable_ste_pruning_on_pi05,
+                )
+            except Exception as e:  # pragma: no cover
+                raise RuntimeError(
+                    "VLA-OPT wrappers requested via env vars, but `vla_opt` cannot be imported. "
+                    "If running from `third_party/openpi`, ensure the mono-repo root `src/` is on PYTHONPATH "
+                    "(or pass the vla-opt flags to `scripts/serve_policy.py`)."
+                ) from e
+
+            if _env_flag("VLA_OPT_VE_FILM"):
+                num_film_blocks = int(os.environ.get("VLA_OPT_VE_FILM_NUM_BLOCKS", "4"))
+                handle = enable_stage_a_film_on_pi05(model, cfg=OpenPIStageAFiLMConfig(num_film_blocks=num_film_blocks))
+                setattr(model, "_vla_opt_stage_a_handle", handle)
+                logger.info("VLA-OPT VE-FiLM enabled (serve): num_film_blocks=%s", num_film_blocks)
+
+            if _env_flag("VLA_OPT_STE_PRUNE"):
+                k = int(os.environ.get("VLA_OPT_STE_PRUNE_K", "64"))
+                stage = os.environ.get("VLA_OPT_STE_PRUNE_STAGE", "gather").strip().lower()
+                if stage in {"1", "stage1"}:
+                    stage = "mask"
+                if stage in {"2", "stage2"}:
+                    stage = "gather"
+                if stage not in {"mask", "gather"}:
+                    raise ValueError(f"Invalid VLA_OPT_STE_PRUNE_STAGE={stage!r} (expected mask/gather)")
+
+                tau = float(os.environ.get("VLA_OPT_STE_PRUNE_TAU", "1.0"))
+                if tau <= 0:
+                    raise ValueError(f"VLA_OPT_STE_PRUNE_TAU must be > 0, got {tau}")
+
+                prune_layer_env = os.environ.get("VLA_OPT_STE_PRUNE_LAYER", "").strip()
+                prune_layer = int(prune_layer_env) if prune_layer_env else None
+
+                hidden_env = os.environ.get("VLA_OPT_STE_PRUNE_SCORE_MLP_HIDDEN_DIM", "").strip()
+                score_hidden = int(hidden_env) if hidden_env else None
+
+                handle = enable_ste_pruning_on_pi05(
+                    model,
+                    cfg=OpenPIStePruningConfig(
+                        k=k,
+                        tau=tau,
+                        stage=stage,
+                        prune_layer=prune_layer,
+                        score_mlp_hidden_dim=score_hidden,
+                    ),
+                )
+                setattr(model, "_vla_opt_ste_prune_handle", handle)
+                logger.info(
+                    "VLA-OPT STE pruning enabled (serve): k=%s stage=%s tau=%.3g prune_layer=%s",
+                    k,
+                    stage,
+                    tau,
+                    str(prune_layer),
+                )
+
         safetensors.torch.load_model(model, weight_path)
         return model
 

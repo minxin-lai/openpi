@@ -4,16 +4,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
 
-# ===== Config (override via env vars) =====
-CLIENT_GPU="${CLIENT_GPU:-0}"
-HOST="${HOST:-127.0.0.1}"
-PORT="${PORT:-8002}"
-TASK_SUITE="${TASK_SUITE:-libero_spatial}"   # libero_spatial|libero_object|libero_goal|libero_10
-TRIALS="${TRIALS:-1}"
+# One-file "edit and run" client launcher.
+# - Edit the values below to pick host/port/suite/trials/GPU.
+# - This runs the LIBERO simulator and talks to the policy server over WebSocket.
 
-VENV_DIR="${VENV_DIR:-examples/libero/.venv}"
-VIDEO_OUT_ROOT="${VIDEO_OUT_ROOT:-runs/libero/videos}"
-VIDEO_OUT_PATH="${VIDEO_OUT_PATH:-${VIDEO_OUT_ROOT}/${TASK_SUITE}_$(date +%Y%m%d_%H%M%S)}"
+CLIENT_GPU="0"
+HOST="127.0.0.1"
+PORT="8002"
+TASK_SUITE="libero_spatial"   # libero_spatial|libero_object|libero_goal|libero_10
+TRIALS="2"
+
+VENV_DIR="examples/libero/.venv"
+VIDEO_OUT_ROOT="runs/libero/videos"
+VIDEO_OUT_PATH="${VIDEO_OUT_ROOT}/${TASK_SUITE}_$(date +%Y%m%d_%H%M%S)"
 
 echo "=== OpenPI LIBERO Client ==="
 echo "Host: ${HOST}"
@@ -44,4 +47,3 @@ CUDA_VISIBLE_DEVICES="${CLIENT_GPU}" python examples/libero/main.py \
   --args.task-suite-name "${TASK_SUITE}" \
   --args.num-trials-per-task "${TRIALS}" \
   --args.video-out-path "${VIDEO_OUT_PATH}"
-

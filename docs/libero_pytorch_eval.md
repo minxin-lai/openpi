@@ -1,6 +1,6 @@
 # LIBERO (PyTorch) 评测完整流程（含转换 JAX → PyTorch）
 
-本仓库的 `run_libero_server.sh` / `run_libero_eval_client.sh` 走的是 **PyTorch 权重**（目录里有 `model.safetensors`）+ WebSocket server/client 的评测方式。  
+本仓库的 `server_libero.sh` / `client_libero_eval.sh` 走的是 **PyTorch 权重**（目录里有 `model.safetensors`）+ WebSocket server/client 的评测方式。  
 如果你直接用 base 权重（例如 `pi05_base`）跑 LIBERO，成功率很可能几乎全是 `False`；LIBERO 评测需要使用 **`pi05_libero` 的 finetuned checkpoint**，并将其转换成 PyTorch 格式后再跑。
 
 ## 0. 前置条件
@@ -94,24 +94,24 @@ ls /workspace/laiminxin/models/pi05_libero_pytorch
 
 ## 4) 配置并启动 PyTorch policy server
 
-编辑 `run_libero_server.sh`，把 `MODEL_PATH` 改为上一步输出目录：
+编辑 `server_libero.sh`，把 `MODEL_PATH` 改为上一步输出目录：
 
 ```bash
-# third_party/openpi/run_libero_server.sh
+# third_party/openpi/server_libero.sh
 MODEL_PATH="/workspace/laiminxin/models/pi05_libero_pytorch"
 ```
 
 然后启动 server：
 
 ```bash
-bash run_libero_server.sh
+bash server_libero.sh
 ```
 
 默认端口在脚本里是 `8002`（`PORT=8002`）。保持该终端窗口运行。
 
 ## 5) 启动 LIBERO eval client（仿真端）
 
-`run_libero_eval_client.sh` 会使用 `examples/libero/.venv`（Python 3.8）运行仿真。按脚本提示先创建好 venv：
+`client_libero_eval.sh` 会使用 `examples/libero/.venv`（Python 3.8）运行仿真。按脚本提示先创建好 venv：
 
 ```bash
 uv venv --python 3.8 examples/libero/.venv
@@ -133,7 +133,7 @@ deactivate
 最后运行评测 client：
 
 ```bash
-bash run_libero_eval_client.sh
+bash client_libero_eval.sh
 ```
 
 你可以在脚本里改这些参数：

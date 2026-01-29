@@ -220,7 +220,25 @@ class TracedPolicy(_base_policy.BasePolicy):
             sample_actions = getattr(model, "sample_actions")
 
         start_time = time.monotonic()
-        actions = sample_actions(pytorch_device, observation, **sample_kwargs)
+        stage_a_handle = getattr(model, "_vla_opt_stage_a_handle", None)
+        ste_handle = getattr(model, "_vla_opt_ste_prune_handle", None)
+        if stage_a_handle is not None or ste_handle is not None:
+            lang_tokens = getattr(observation, "tokenized_prompt", None)
+            if lang_tokens is None:
+                raise ValueError("VLA-OPT wrapper enabled but observation.tokenized_prompt is None")
+            text_tokens = model.paligemma_with_expert.embed_language_tokens(lang_tokens)
+            if stage_a_handle is not None:
+                stage_a_handle.set_condition(text_tokens)
+            if ste_handle is not None:
+                ste_handle.set_condition(text_tokens)
+
+        try:
+            actions = sample_actions(pytorch_device, observation, **sample_kwargs)
+        finally:
+            if ste_handle is not None:
+                ste_handle.clear_condition()
+            if stage_a_handle is not None:
+                stage_a_handle.clear_condition()
         model_time = time.monotonic() - start_time
 
         outputs = {

@@ -62,41 +62,129 @@ def _parse_extra_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     )
 
     parser.add_argument(
-        "--stage_a",
-        "--stage-a",
+        "--ve_film",
+        "--ve-film",
         action="store_true",
         default=False,
-        help="Enable VLA-OPT Stage-A FiLM.",
+        help="Enable VLA-OPT VE-FiLM.",
     )
     parser.add_argument(
-        "--no_stage_a",
-        "--no-stage-a",
+        "--no_ve_film",
+        "--no-ve-film",
         action="store_false",
-        dest="stage_a",
-        help="Disable VLA-OPT Stage-A FiLM.",
+        dest="ve_film",
+        help="Disable VLA-OPT VE-FiLM.",
     )
 
     parser.add_argument(
-        "--stage_a_freeze_base",
-        "--stage-a-freeze-base",
+        "--ve_film_freeze_base",
+        "--ve-film-freeze-base",
         action="store_true",
         default=True,
-        help="Freeze base model; train only FiLM params (Stage A).",
+        help="Freeze base model; train only FiLM params (VE).",
     )
     parser.add_argument(
-        "--no_stage_a_freeze_base",
-        "--no-stage-a-freeze-base",
+        "--no_ve_film_freeze_base",
+        "--no-ve-film-freeze-base",
         action="store_false",
-        dest="stage_a_freeze_base",
-        help="Do not freeze base model when Stage A is enabled.",
+        dest="ve_film_freeze_base",
+        help="Do not freeze base model when VE-FiLM is enabled.",
     )
 
     parser.add_argument(
-        "--stage_a_num_film_blocks",
-        "--stage-a-num-film-blocks",
+        "--ve_film_num_blocks",
+        "--ve-film-num-blocks",
         type=int,
         default=4,
         help="Wrap last N SigLIP blocks.",
+    )
+
+    # ============================
+    # VLA-OPT: STE pruning (Top-K + Straight-Through)
+    # ============================
+    parser.add_argument(
+        "--ste_prune",
+        "--ste-prune",
+        action="store_true",
+        default=False,
+        help="Enable VLA-OPT STE pruning (Top-K + STE) inside SigLIP vision encoder.",
+    )
+    parser.add_argument(
+        "--ste_prune_k",
+        "--ste-prune-k",
+        type=int,
+        default=64,
+        help="Keep K patch tokens per view (hard Top-K in forward).",
+    )
+    parser.add_argument(
+        "--ste_prune_tau",
+        "--ste-prune-tau",
+        type=float,
+        default=1.0,
+        help="Initial STE temperature tau (>0).",
+    )
+    parser.add_argument(
+        "--ste_prune_tau_final",
+        "--ste-prune-tau-final",
+        type=float,
+        default=None,
+        help="Final STE temperature tau (>0). If set, linearly anneal from tau to tau_final over training steps.",
+    )
+    parser.add_argument(
+        "--ste_prune_stage",
+        "--ste-prune-stage",
+        type=str,
+        default="mask",
+        help="Pruning stage: 'mask' (STE gate, keep length N), 'gather' (STE gate + gather, length K), or 'auto'.",
+    )
+    parser.add_argument(
+        "--ste_prune_switch_step",
+        "--ste-prune-switch-step",
+        type=int,
+        default=-1,
+        help="When ste_prune_stage='auto', switch to gather at this global step (default: num_train_steps//2).",
+    )
+    parser.add_argument(
+        "--ste_prune_layer",
+        "--ste-prune-layer",
+        type=int,
+        default=None,
+        help="SigLIP layer index to apply pruning after. If omitted, will try to infer the first FiLM layer index.",
+    )
+    parser.add_argument(
+        "--ste_prune_lambda_budget",
+        "--ste-prune-lambda-budget",
+        type=float,
+        default=0.01,
+        help="Weight for budget regularizer L_budget.",
+    )
+    parser.add_argument(
+        "--ste_prune_lambda_bin",
+        "--ste-prune-lambda-bin",
+        type=float,
+        default=0.01,
+        help="Weight for binarization regularizer L_bin.",
+    )
+    parser.add_argument(
+        "--ste_prune_score_mlp_hidden_dim",
+        "--ste-prune-score-mlp-hidden-dim",
+        type=int,
+        default=None,
+        help="Hidden dim of score MLP (default: token dim).",
+    )
+    parser.add_argument(
+        "--ste_prune_freeze_base",
+        "--ste-prune-freeze-base",
+        action="store_true",
+        default=True,
+        help="Freeze base model; train only pruning head params (and FiLM if enabled).",
+    )
+    parser.add_argument(
+        "--no_ste_prune_freeze_base",
+        "--no-ste-prune-freeze-base",
+        action="store_false",
+        dest="ste_prune_freeze_base",
+        help="Do not freeze base model when STE pruning is enabled.",
     )
     args, remaining = parser.parse_known_args(argv)
     return args, remaining
@@ -480,28 +568,83 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
         safetensors.torch.load_model(model, model_path)
         logging.info("Loaded PyTorch weights from %s", config.pytorch_weight_path)
 
-    # Optional: VLA-OPT Stage-A FiLM integration (Pi0.5 only).
+    # Optional: VLA-OPT VE-FiLM integration (Pi0.5 only).
     stage_a_handle = None
-    if bool(extra.stage_a):
+    ste_handle = None
+    pruning_losses = None
+
+    need_vla_opt = bool(extra.ve_film) or bool(extra.ste_prune)
+    if need_vla_opt:
         # Allow importing vla-opt (mono-repo) when this OpenPI copy lives under `third_party/openpi`.
         repo_root = Path(__file__).resolve().parents[3]
         vla_src = repo_root / "src"
         if not vla_src.exists():
-            raise FileNotFoundError(f"Stage-A enabled but vla-opt src not found at: {vla_src}")
+            raise FileNotFoundError(f"VLA-OPT integration enabled but vla-opt src not found at: {vla_src}")
         if str(vla_src) not in sys.path:
             sys.path.insert(0, str(vla_src))
 
-        from vla_opt.integrations.openpi_pi05 import OpenPIStageAFiLMConfig, enable_stage_a_film_on_pi05
+        from vla_opt.integrations.openpi_pi05 import (
+            OpenPIStageAFiLMConfig,
+            OpenPIStePruningConfig,
+            enable_stage_a_film_on_pi05,
+            enable_ste_pruning_on_pi05,
+        )
+        from modules.ste_pruning import pruning_losses as _pruning_losses
 
-        num_film_blocks = int(extra.stage_a_num_film_blocks)
+        pruning_losses = _pruning_losses
+
+    if bool(extra.ve_film):
+
+        num_film_blocks = int(extra.ve_film_num_blocks)
         stage_a_handle = enable_stage_a_film_on_pi05(model, cfg=OpenPIStageAFiLMConfig(num_film_blocks=num_film_blocks))
         actual = len(stage_a_handle.film_generators)
         film_params = sum(int(p.numel()) for p in stage_a_handle.trainable_parameters())
         logging.info(
-            "VLA-OPT Stage-A FiLM enabled: num_film_blocks=%s (actual_wrapped=%s) film_params=%s",
+            "VLA-OPT VE-FiLM enabled: num_film_blocks=%s (actual_wrapped=%s) film_params=%s",
             num_film_blocks,
             actual,
             film_params,
+        )
+
+    if bool(extra.ste_prune):
+        stage_s = str(extra.ste_prune_stage or "mask").strip().lower()
+        if stage_s in {"1", "stage1"}:
+            stage_s = "mask"
+        if stage_s in {"2", "stage2"}:
+            stage_s = "gather"
+        if stage_s not in {"mask", "gather", "auto"}:
+            raise ValueError(f"Invalid --ste-prune-stage={extra.ste_prune_stage!r} (expected mask/gather/auto)")
+
+        k = int(extra.ste_prune_k)
+        tau = float(extra.ste_prune_tau)
+        if k <= 0:
+            raise ValueError(f"--ste-prune-k must be > 0, got {k}")
+        if tau <= 0:
+            raise ValueError(f"--ste-prune-tau must be > 0, got {tau}")
+        tau_final = extra.ste_prune_tau_final
+        if tau_final is not None and float(tau_final) <= 0:
+            raise ValueError(f"--ste-prune-tau-final must be > 0, got {tau_final}")
+
+        init_stage = "mask" if stage_s == "auto" else stage_s
+        ste_handle = enable_ste_pruning_on_pi05(
+            model,
+            cfg=OpenPIStePruningConfig(
+                k=k,
+                tau=tau,
+                stage=init_stage,
+                prune_layer=extra.ste_prune_layer,
+                score_mlp_hidden_dim=extra.ste_prune_score_mlp_hidden_dim,
+            ),
+        )
+        prune_params = sum(int(p.numel()) for p in ste_handle.trainable_parameters())
+        logging.info(
+            "VLA-OPT STE pruning enabled: k=%s tau=%.3g tau_final=%s stage=%s prune_layer=%s prune_params=%s",
+            k,
+            tau,
+            str(tau_final),
+            stage_s,
+            str(extra.ste_prune_layer),
+            prune_params,
         )
 
     if hasattr(model, "gradient_checkpointing_enable"):
@@ -541,16 +684,23 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
     end_lr = config.lr_schedule.decay_lr
 
     # Create optimizer with config parameters
-    if stage_a_handle is not None and bool(extra.stage_a_freeze_base):
+    freeze_base = (stage_a_handle is not None and bool(extra.ve_film_freeze_base)) or (
+        ste_handle is not None and bool(extra.ste_prune_freeze_base)
+    )
+    if freeze_base:
         for p in model.parameters():
             p.requires_grad = False
-        for p in stage_a_handle.trainable_parameters():
-            p.requires_grad = True
+        if stage_a_handle is not None:
+            for p in stage_a_handle.trainable_parameters():
+                p.requires_grad = True
+        if ste_handle is not None:
+            for p in ste_handle.trainable_parameters():
+                p.requires_grad = True
         trainable_params = [p for p in model.parameters() if p.requires_grad]
         if len(trainable_params) == 0:
-            raise ValueError("Stage-A enabled but no trainable params after freezing base")
+            raise ValueError("No trainable params after freezing base")
         optim_params = trainable_params
-        logging.info("VLA-OPT Stage-A: froze base model; trainable_params=%s", sum(int(p.numel()) for p in trainable_params))
+        logging.info("VLA-OPT: froze base model; trainable_params=%s", sum(int(p.numel()) for p in trainable_params))
     else:
         optim_params = list(model.parameters())
 
@@ -625,16 +775,55 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                 pg["lr"] = lr_schedule(global_step)
 
             # Forward pass
-            if stage_a_handle is not None:
+            ste_l_budget = None
+            ste_l_bin = None
+            ste_stage = None
+            ste_tau = None
+            ste_scores_mean = None
+            ste_scores_std = None
+            ste_keep_ratio = None
+            ste_n_tokens = None
+
+            if stage_a_handle is not None or ste_handle is not None:
                 raw_model = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
                 lang_tokens = getattr(observation, "tokenized_prompt", None)
                 if lang_tokens is None:
-                    raise ValueError("Stage-A enabled but observation.tokenized_prompt is None")
+                    raise ValueError("VLA-OPT enabled but observation.tokenized_prompt is None")
                 text_tokens = raw_model.paligemma_with_expert.embed_language_tokens(lang_tokens)
-                stage_a_handle.set_condition(text_tokens)
+                if stage_a_handle is not None:
+                    stage_a_handle.set_condition(text_tokens)
+                if ste_handle is not None:
+                    stage_cfg = str(extra.ste_prune_stage or "mask").strip().lower()
+                    if stage_cfg in {"1", "stage1"}:
+                        stage_cfg = "mask"
+                    if stage_cfg in {"2", "stage2"}:
+                        stage_cfg = "gather"
+                    if stage_cfg == "auto":
+                        switch_step = int(extra.ste_prune_switch_step)
+                        if switch_step < 0:
+                            switch_step = int(config.num_train_steps) // 2
+                        ste_stage = "mask" if int(global_step) < int(switch_step) else "gather"
+                    else:
+                        ste_stage = stage_cfg
+
+                    tau0 = float(extra.ste_prune_tau)
+                    tau1 = extra.ste_prune_tau_final
+                    if tau1 is None:
+                        ste_tau = tau0
+                    else:
+                        tau1_f = float(tau1)
+                        denom = max(1, int(config.num_train_steps) - 1)
+                        t = min(1.0, max(0.0, float(global_step) / float(denom)))
+                        ste_tau = tau0 + (tau1_f - tau0) * t
+
+                    ste_handle.set_stage(ste_stage)  # type: ignore[arg-type]
+                    ste_handle.set_tau(ste_tau)
+                    ste_handle.set_condition(text_tokens)
+                    ste_handle.start_step()
+
                 if is_main and global_step == 0 and logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.debug(
-                        "VLA-OPT Stage-A cond_tokens: shape=%s dtype=%s device=%s",
+                        "VLA-OPT cond_tokens: shape=%s dtype=%s device=%s",
                         tuple(text_tokens.shape),
                         str(text_tokens.dtype),
                         str(text_tokens.device),
@@ -649,8 +838,41 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
 
             loss = losses.mean()
 
+            if ste_handle is not None:
+                if pruning_losses is None:
+                    raise RuntimeError("STE pruning enabled but pruning_losses is not available")
+                if len(ste_handle.step_scores) == 0 or len(ste_handle.step_soft_mask) == 0:
+                    raise RuntimeError("STE pruning enabled but collected no per-view stats in this step")
+                ste_n_tokens = int(ste_handle.step_scores[0].shape[1])
+                ste_keep_ratio = float(int(ste_handle.k) / float(max(1, ste_n_tokens)))
+
+                # Aggregate reg losses across views.
+                l_budget_vals = []
+                l_bin_vals = []
+                for soft in ste_handle.step_soft_mask:
+                    lb, lbin = pruning_losses(soft, int(ste_handle.k))
+                    l_budget_vals.append(lb)
+                    l_bin_vals.append(lbin)
+                ste_l_budget = torch.stack(l_budget_vals).mean()
+                ste_l_bin = torch.stack(l_bin_vals).mean()
+
+                loss = loss + float(extra.ste_prune_lambda_budget) * ste_l_budget + float(extra.ste_prune_lambda_bin) * ste_l_bin
+
+                with torch.no_grad():
+                    flat = torch.cat([s.reshape(-1) for s in ste_handle.step_scores], dim=0)
+                    ste_scores_mean = float(flat.mean().item())
+                    ste_scores_std = float(flat.std().item())
+
+                # IMPORTANT: stop collecting before backward (checkpoint recomputation will re-run forward).
+                ste_handle.finish_step()
+
             # Backward pass
             loss.backward()
+
+            if ste_handle is not None:
+                # IMPORTANT: keep condition set during backward when using gradient checkpointing
+                # (checkpoint recomputes forward in backward).
+                ste_handle.clear_condition()
 
             if stage_a_handle is not None:
                 # IMPORTANT: keep condition set during backward when using gradient checkpointing
@@ -681,6 +903,22 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                     "learning_rate": optim.param_groups[0]["lr"],
                     "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
                 }
+                if ste_handle is not None:
+                    # Note: ste_stage/ste_tau are computed per step when condition is set.
+                    info["ste_prune_k"] = int(extra.ste_prune_k)
+                    info["ste_prune_tau"] = float(ste_tau) if ste_tau is not None else float(extra.ste_prune_tau)
+                    info["ste_prune_stage"] = str(ste_stage) if ste_stage is not None else str(extra.ste_prune_stage)
+                    if ste_l_budget is not None:
+                        info["ste_prune_l_budget"] = float(ste_l_budget.detach().item())
+                    if ste_l_bin is not None:
+                        info["ste_prune_l_bin"] = float(ste_l_bin.detach().item())
+                if ste_scores_mean is not None and ste_scores_std is not None:
+                    info["ste_prune_scores_mean"] = float(ste_scores_mean)
+                    info["ste_prune_scores_std"] = float(ste_scores_std)
+                if ste_keep_ratio is not None:
+                    info["ste_prune_keep_ratio"] = float(ste_keep_ratio)
+                if ste_n_tokens is not None:
+                    info["ste_prune_n_tokens"] = int(ste_n_tokens)
                 collect_stage_a_stats = stage_a_handle is not None and (
                     config.wandb_enabled or logging.getLogger().isEnabledFor(logging.DEBUG)
                 )
@@ -710,11 +948,39 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                     ]
                     if len(vals) > 0:
                         avg_grad_norm = sum(vals) / len(vals)
-                logging.info(
+                msg = (
                     f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} grad_norm={avg_grad_norm:.2f} time={elapsed:.1f}s"
                     if avg_grad_norm is not None
                     else f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} time={elapsed:.1f}s"
                 )
+                if ste_handle is not None:
+                    stage_last = next(
+                        (str(info["ste_prune_stage"]) for info in reversed(infos) if "ste_prune_stage" in info), "?"
+                    )
+                    vals_lb = [info.get("ste_prune_l_budget") for info in infos if "ste_prune_l_budget" in info]
+                    vals_lbin = [info.get("ste_prune_l_bin") for info in infos if "ste_prune_l_bin" in info]
+                    vals_tau = [info.get("ste_prune_tau") for info in infos if "ste_prune_tau" in info]
+                    keep_ratio = next(
+                        (float(info["ste_prune_keep_ratio"]) for info in reversed(infos) if "ste_prune_keep_ratio" in info),
+                        None,
+                    )
+                    n_tokens = next(
+                        (int(info["ste_prune_n_tokens"]) for info in reversed(infos) if "ste_prune_n_tokens" in info),
+                        None,
+                    )
+                    k_tokens = next((int(info["ste_prune_k"]) for info in reversed(infos) if "ste_prune_k" in info), None)
+                    msg += (
+                        " ste_prune(stage="
+                        + stage_last
+                        + (f" tau={sum(vals_tau)/len(vals_tau):.3g}" if len(vals_tau) > 0 else "")
+                        + (f" Lb={sum(vals_lb)/len(vals_lb):.3g}" if len(vals_lb) > 0 else "")
+                        + (f" Lbin={sum(vals_lbin)/len(vals_lbin):.3g}" if len(vals_lbin) > 0 else "")
+                        + (f" keep={keep_ratio:.3f}" if keep_ratio is not None else "")
+                        + (f" N={n_tokens}" if n_tokens is not None else "")
+                        + (f" K={k_tokens}" if k_tokens is not None else "")
+                        + ")"
+                    )
+                logging.info(msg)
                 if stage_a_handle is not None and logging.getLogger().isEnabledFor(logging.DEBUG):
                     vals_g = [info.get("stage_a_gamma_abs_mean") for info in infos if "stage_a_gamma_abs_mean" in info]
                     vals_b = [info.get("stage_a_beta_abs_mean") for info in infos if "stage_a_beta_abs_mean" in info]
@@ -740,6 +1006,21 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                     if len(vals_g) > 0 and len(vals_b) > 0:
                         log_payload["stage_a_gamma_abs_mean"] = sum(vals_g) / len(vals_g)
                         log_payload["stage_a_beta_abs_mean"] = sum(vals_b) / len(vals_b)
+                    vals_lb = [info.get("ste_prune_l_budget") for info in infos if "ste_prune_l_budget" in info]
+                    vals_lbin = [info.get("ste_prune_l_bin") for info in infos if "ste_prune_l_bin" in info]
+                    if len(vals_lb) > 0:
+                        log_payload["ste_prune_l_budget"] = sum(vals_lb) / len(vals_lb)
+                    if len(vals_lbin) > 0:
+                        log_payload["ste_prune_l_bin"] = sum(vals_lbin) / len(vals_lbin)
+                    vals_tau = [info.get("ste_prune_tau") for info in infos if "ste_prune_tau" in info]
+                    if len(vals_tau) > 0:
+                        log_payload["ste_prune_tau"] = sum(vals_tau) / len(vals_tau)
+                    vals_sm = [info.get("ste_prune_scores_mean") for info in infos if "ste_prune_scores_mean" in info]
+                    vals_ss = [info.get("ste_prune_scores_std") for info in infos if "ste_prune_scores_std" in info]
+                    if len(vals_sm) > 0:
+                        log_payload["ste_prune_scores_mean"] = sum(vals_sm) / len(vals_sm)
+                    if len(vals_ss) > 0:
+                        log_payload["ste_prune_scores_std"] = sum(vals_ss) / len(vals_ss)
                     wandb.log(log_payload, step=global_step)
 
                 start_time = time.time()
