@@ -260,6 +260,8 @@ class BaseModelConfig(abc.ABC):
                     OpenPIStePruningConfig,
                     enable_stage_a_film_on_pi05,
                     enable_ste_pruning_on_pi05,
+                    find_pi05_ste_prune_layer_index,
+                    resolve_pi05_vision_encoder_layers,
                 )
             except Exception as e:  # pragma: no cover
                 raise RuntimeError(
@@ -305,6 +307,14 @@ class BaseModelConfig(abc.ABC):
                     ),
                 )
                 setattr(model, "_vla_opt_ste_prune_handle", handle)
+                try:
+                    layers = resolve_pi05_vision_encoder_layers(model)
+                    setattr(model, "_vla_opt_ste_prune_num_vision_layers", int(len(layers)))
+                    setattr(model, "_vla_opt_ste_prune_layer_resolved", find_pi05_ste_prune_layer_index(model))
+                except Exception:  # pragma: no cover
+                    # Best-effort debug metadata (do not affect serving).
+                    setattr(model, "_vla_opt_ste_prune_num_vision_layers", None)
+                    setattr(model, "_vla_opt_ste_prune_layer_resolved", None)
                 logger.info(
                     "VLA-OPT STE pruning enabled (serve): k=%s stage=%s tau=%.3g prune_layer=%s",
                     k,

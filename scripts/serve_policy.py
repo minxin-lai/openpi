@@ -13,6 +13,22 @@ from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
+# Usage (debug token/KV introspection)
+#
+#   # Baseline (prints one OPENPI_DEBUG JSON line in server logs)
+#   uv run scripts/serve_policy.py --env LIBERO --port 8002 \
+#     --debug-token --debug-max-infer 1 --debug-variant baseline --debug-kv-layers ends \
+#     policy:checkpoint --policy.config pi05_libero_spatial --policy.dir <CKPT_DIR>
+#
+#   # VLA-OPT (FiLM + STE pruning; prints one OPENPI_DEBUG JSON line)
+#   uv run scripts/serve_policy.py --env LIBERO --port 8003 \
+#     --vla-opt-ve-film --vla-opt-ve-film-num-blocks 4 \
+#     --vla-opt-ste-prune --vla-opt-ste-prune-k 64 --vla-opt-ste-prune-stage gather --vla-opt-ste-prune-tau 1.0 \
+#     --debug-token --debug-max-infer 1 --debug-variant vla_opt --debug-kv-layers ends \
+#     policy:checkpoint --policy.config pi05_libero_spatial --policy.dir <CKPT_DIR>
+#
+# The OPENPI_DEBUG payload is produced by `openpi.models_pytorch.pi0_pytorch.PI0Pytorch.sample_actions`.
+
 # Allow importing repo-root `tracer/` when this OpenPI copy lives under `third_party/openpi`.
 _repo_root = Path(__file__).resolve().parents[3]
 for p in (_repo_root, _repo_root / "src"):
@@ -69,6 +85,10 @@ class Args:
     trace_dump_attn: bool = False
     # Comma-separated layer indices, e.g. "0,8,16". Empty means "last layer".
     trace_attn_layers: str = ""
+    # Dump SigLIP vision encoder attention (token-to-token), reduced to per-patch key importance.
+    trace_dump_ve_attn: bool = False
+    # Comma-separated vision encoder layer indices, e.g. "0,8,16". Empty means "last layer".
+    trace_ve_attn_layers: str = ""
     # Save input images (from client obs) for offline overlays.
     trace_save_policy_images: bool = True
     # Print attention stats to logs.
@@ -77,6 +97,20 @@ class Args:
     trace_max_dumps: int = 200
     # Dump every N inferences (1 means dump every inference).
     trace_every_n: int = 1
+
+    # ============================
+    # Debug (token/KV introspection)
+    # ============================
+    # Print one-line JSON debug dump from PI0Pytorch.sample_actions (prefix/suffix token lengths + KV cache summary).
+    debug_token: bool = False
+    # Max number of inferences to print per process.
+    debug_max_infer: int = 1
+    # Optional label included in the JSON (useful for baseline vs vla_opt runs).
+    debug_variant: str = ""
+    # Which KV cache layers to include in the summary ("ends", "all", or comma-separated indices like "0,8,16").
+    debug_kv_layers: str = "ends"
+    # Additionally check whether the suffix cache preserves the prefix slice (best-effort, loose bf16 tolerance).
+    debug_kv_compare: bool = False
 
     # ============================
     # VLA-OPT (Pi0.5 PyTorch wrapper)
@@ -138,6 +172,16 @@ def create_policy(args: Args) -> _policy.Policy:
 
 
 def main(args: Args) -> None:
+    # Configure debug env vars consumed by PI0Pytorch (kept env-based so it works for both training/serving entrypoints).
+    if bool(args.debug_token):
+        os.environ["OPENPI_DEBUG_TOKEN"] = "1"
+        os.environ["OPENPI_DEBUG_MAX_INFER"] = str(int(args.debug_max_infer))
+        if str(args.debug_variant).strip():
+            os.environ["OPENPI_DEBUG_VARIANT"] = str(args.debug_variant).strip()
+        os.environ["OPENPI_DEBUG_KV_LAYERS"] = str(args.debug_kv_layers).strip() or "ends"
+        if bool(args.debug_kv_compare):
+            os.environ["OPENPI_DEBUG_KV_COMPARE"] = "1"
+
     if bool(args.vla_opt_ve_film) or bool(args.vla_opt_ste_prune):
         # Ensure vla-opt is importable when running inside `third_party/openpi/`.
         vla_src = _repo_root / "src"
@@ -185,20 +229,32 @@ def main(args: Args) -> None:
     if args.record:
         policy = _policy.PolicyRecorder(policy, "policy_records")
 
-    if args.trace_out_dir and args.trace_dump_attn:
+    if args.trace_out_dir and (args.trace_dump_attn or args.trace_dump_ve_attn):
         from openpi.serving.traced_policy import PolicyTraceConfig, TracedPolicy
 
-        attn_layers = tuple(int(p.strip()) for p in str(args.trace_attn_layers).split(",") if p.strip())
+        llm_attn_layers = tuple(int(p.strip()) for p in str(args.trace_attn_layers).split(",") if p.strip())
+        ve_attn_layers = tuple(int(p.strip()) for p in str(args.trace_ve_attn_layers).split(",") if p.strip())
         trace_cfg = PolicyTraceConfig(
             out_dir=str(args.trace_out_dir),
-            dump_attn=bool(args.trace_dump_attn),
-            attn_layers=attn_layers,
+            dump_llm_attn=bool(args.trace_dump_attn),
+            llm_attn_layers=llm_attn_layers,
+            dump_ve_attn=bool(args.trace_dump_ve_attn),
+            ve_attn_layers=ve_attn_layers,
             save_policy_images=bool(args.trace_save_policy_images),
             print_attn=bool(args.trace_print_attn),
             max_dumps=int(args.trace_max_dumps),
             every_n=int(args.trace_every_n),
         )
-        logging.info("Tracing enabled: out_dir=%s attn_layers=%s max_dumps=%s every_n=%s", trace_cfg.out_dir, attn_layers or ("last",), trace_cfg.max_dumps, trace_cfg.every_n)
+        logging.info(
+            "Tracing enabled: out_dir=%s llm_attn=%s(layers=%s) ve_attn=%s(layers=%s) max_dumps=%s every_n=%s",
+            trace_cfg.out_dir,
+            bool(trace_cfg.dump_llm_attn),
+            llm_attn_layers or ("last",),
+            bool(trace_cfg.dump_ve_attn),
+            ve_attn_layers or ("last",),
+            trace_cfg.max_dumps,
+            trace_cfg.every_n,
+        )
         policy = TracedPolicy(policy, trace_cfg=trace_cfg)
 
     hostname = socket.gethostname()

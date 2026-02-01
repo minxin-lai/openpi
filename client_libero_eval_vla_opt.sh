@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# LIBERO eval client (manual host/port; baseline-ish defaults)
+# LIBERO eval client (vla-opt defaults)
 #
-# 如果你只是想跑 baseline / vla-opt，建议直接用：
-#   - bash client_libero_eval_baseline.sh
-#   - bash client_libero_eval_vla_opt.sh
+# 你只需要记住：
+#   1) 先起 server：bash server_pi05_libero_vla_opt.sh
+#   2) 再跑 client：bash client_libero_eval_vla_opt.sh
+#
+# 输出：
+# - 视频：runs/libero/videos/vla_opt/...
+# - 日志：runs/libero/logs/vla_opt/...
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${script_dir}"
@@ -15,26 +19,32 @@ die() { echo "Error: $*" >&2; exit 2; }
 usage() {
   cat <<'EOF'
 Usage:
-  bash client_libero_eval.sh [options...]
+  bash client_libero_eval_vla_opt.sh [options...]
 
 Options:
   --host <ip>         default: 127.0.0.1
-  --port <port>       default: 8002
+  --port <port>       default: 8003
   --suite <name>      default: libero_spatial (libero_spatial|libero_object|libero_goal|libero_10)
-  --trials <n>        default: 2
+  --trials <n>        default: 20
   --gpu <id>          default: 0 (CUDA_VISIBLE_DEVICES)
-  --video-out <path>  default: runs/libero/videos/<suite>_<ts>
+  --video-out <path>  default: runs/libero/videos/vla_opt/<suite>_<ts>
+  --log <path>        default: runs/libero/logs/vla_opt/<suite>_<ts>.log
 EOF
 }
 
 ts="$(date +%Y%m%d_%H%M%S)"
 
+# ======================
+# 配置区（建议只改这里）
+# ======================
 host="127.0.0.1"
-port="8002"
+port="8003"
 suite="libero_spatial"
-trials="2"
+trials="20"
 gpu="0"
-video_out="runs/libero/videos/${suite}_${ts}"
+
+video_out=""
+log_path=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,21 +55,32 @@ while [[ $# -gt 0 ]]; do
     --trials) trials="${2:?}"; shift 2 ;;
     --gpu) gpu="${2:?}"; shift 2 ;;
     --video-out) video_out="${2:?}"; shift 2 ;;
+    --log) log_path="${2:?}"; shift 2 ;;
     *) die "Unknown option: $1 (run --help)" ;;
   esac
 done
 
 [[ -f "examples/libero/main.py" ]] || die "Run from third_party/openpi (missing examples/libero/main.py)"
+
 venv_dir="examples/libero/.venv"
 [[ -d "${venv_dir}" ]] || die "Venv not found: ${venv_dir} (create: uv venv --python 3.8 ${venv_dir})"
 
-echo "=== OpenPI LIBERO Client ==="
+if [[ -z "${video_out}" ]]; then
+  video_out="runs/libero/videos/vla_opt/${suite}_${ts}"
+fi
+if [[ -z "${log_path}" ]]; then
+  log_path="runs/libero/logs/vla_opt/${suite}_${ts}.log"
+fi
+mkdir -p "$(dirname "${log_path}")"
+
+echo "=== OpenPI LIBERO Client (vla_opt) ==="
 echo "host: ${host}"
 echo "port: ${port}"
 echo "suite: ${suite}"
 echo "trials: ${trials}"
 echo "gpu: ${gpu}"
 echo "video_out: ${video_out}"
+echo "log: ${log_path}"
 echo ""
 
 # shellcheck disable=SC1090
@@ -71,5 +92,5 @@ CUDA_VISIBLE_DEVICES="${gpu}" python examples/libero/main.py \
   --args.port "${port}" \
   --args.task-suite-name "${suite}" \
   --args.num-trials-per-task "${trials}" \
-  --args.video-out-path "${video_out}"
+  --args.video-out-path "${video_out}" 2>&1 | tee "${log_path}"
 

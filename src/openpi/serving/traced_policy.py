@@ -21,8 +21,10 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class PolicyTraceConfig:
     out_dir: str
-    dump_attn: bool = False
-    attn_layers: Tuple[int, ...] = ()
+    dump_llm_attn: bool = False
+    llm_attn_layers: Tuple[int, ...] = ()
+    dump_ve_attn: bool = False
+    ve_attn_layers: Tuple[int, ...] = ()
     save_policy_images: bool = True
     print_attn: bool = True
     max_dumps: int = 200
@@ -93,7 +95,7 @@ class TracedPolicy(_base_policy.BasePolicy):
         idx = int(self._infer_idx)
         self._infer_idx += 1
 
-        should_trace = bool(self._cfg.dump_attn) and bool(self._cfg.out_dir)
+        should_trace = bool(self._cfg.out_dir) and (bool(self._cfg.dump_llm_attn) or bool(self._cfg.dump_ve_attn))
         if should_trace and int(self._cfg.every_n) > 1 and (idx % int(self._cfg.every_n) != 0):
             should_trace = False
         if should_trace and int(self._cfg.max_dumps) > 0 and int(self._writer.dump_count) >= int(self._cfg.max_dumps):
@@ -117,8 +119,10 @@ class TracedPolicy(_base_policy.BasePolicy):
                 layout=layout,
             )
             tracer_cfg = self._OpenPIPytorchTraceConfig(
-                dump_attn=True,
-                attn_layers=tuple(int(x) for x in (self._cfg.attn_layers or ())),
+                dump_llm_attn=bool(self._cfg.dump_llm_attn),
+                llm_attn_layers=tuple(int(x) for x in (self._cfg.llm_attn_layers or ())),
+                dump_ve_attn=bool(self._cfg.dump_ve_attn),
+                ve_attn_layers=tuple(int(x) for x in (self._cfg.ve_attn_layers or ())),
                 save_policy_images=bool(self._cfg.save_policy_images),
                 print_attn=bool(self._cfg.print_attn),
             )

@@ -58,7 +58,9 @@ class WebsocketPolicyServer:
                 obs = msgpack_numpy.unpackb(await websocket.recv())
 
                 infer_time = time.monotonic()
-                action = self._policy.infer(obs)
+                # IMPORTANT: run inference off the asyncio event loop so keepalive ping/pong
+                # and other websocket housekeeping can proceed even if inference is slow.
+                action = await asyncio.to_thread(self._policy.infer, obs)
                 infer_time = time.monotonic() - infer_time
 
                 action["server_timing"] = {
