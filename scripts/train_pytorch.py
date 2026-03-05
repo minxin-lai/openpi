@@ -138,6 +138,13 @@ def _parse_extra_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         help="Pruning stage: 'mask' (STE gate, keep length N), 'gather' (STE gate + gather, length K), or 'auto'.",
     )
     parser.add_argument(
+        "--ste_prune_point",
+        "--ste-prune-point",
+        type=str,
+        default="post_encoder",
+        help="Pruning point: 'post_encoder' (after full SigLIP encoder) or 'encoder_layer' (inside encoder).",
+    )
+    parser.add_argument(
         "--ste_prune_switch_step",
         "--ste-prune-switch-step",
         type=int,
@@ -171,6 +178,13 @@ def _parse_extra_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         type=int,
         default=None,
         help="Hidden dim of score MLP (default: token dim).",
+    )
+    parser.add_argument(
+        "--ste_prune_score_num_layers",
+        "--ste-prune-score-num-layers",
+        type=int,
+        default=3,
+        help="Number of FiLM-wrapped SigLIP layers whose scores are averaged before Top-K.",
     )
     parser.add_argument(
         "--ste_prune_freeze_base",
@@ -569,8 +583,8 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
         logging.info("Loaded PyTorch weights from %s", config.pytorch_weight_path)
 
     # Optional: VLA-OPT VE-FiLM integration (Pi0.5 only).
-    stage_a_handle = None
-    ste_handle = None
+    ve_film_handle = None
+    ve_pruning_handle = None
     pruning_losses = None
 
     need_vla_opt = bool(extra.ve_film) or bool(extra.ste_prune)
@@ -584,10 +598,10 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
             sys.path.insert(0, str(vla_src))
 
         from vla_opt.integrations.openpi_pi05 import (
-            OpenPIStageAFiLMConfig,
-            OpenPIStePruningConfig,
-            enable_stage_a_film_on_pi05,
-            enable_ste_pruning_on_pi05,
+            OpenPIVeFilmConfig,
+            OpenPIVePruningConfig,
+            enable_ve_film_on_pi05,
+            enable_ve_pruning_on_pi05,
         )
         from modules.ste_pruning import pruning_losses as _pruning_losses
 
@@ -596,9 +610,9 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
     if bool(extra.ve_film):
 
         num_film_blocks = int(extra.ve_film_num_blocks)
-        stage_a_handle = enable_stage_a_film_on_pi05(model, cfg=OpenPIStageAFiLMConfig(num_film_blocks=num_film_blocks))
-        actual = len(stage_a_handle.film_generators)
-        film_params = sum(int(p.numel()) for p in stage_a_handle.trainable_parameters())
+        ve_film_handle = enable_ve_film_on_pi05(model, cfg=OpenPIVeFilmConfig(num_film_blocks=num_film_blocks))
+        actual = len(ve_film_handle.film_generators)
+        film_params = sum(int(p.numel()) for p in ve_film_handle.trainable_parameters())
         logging.info(
             "VLA-OPT VE-FiLM enabled: num_film_blocks=%s (actual_wrapped=%s) film_params=%s",
             num_film_blocks,
@@ -615,35 +629,48 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
         if stage_s not in {"mask", "gather", "auto"}:
             raise ValueError(f"Invalid --ste-prune-stage={extra.ste_prune_stage!r} (expected mask/gather/auto)")
 
+        point_s = str(extra.ste_prune_point or "post_encoder").strip().lower()
+        if point_s not in {"post_encoder", "encoder_layer"}:
+            raise ValueError(
+                f"Invalid --ste-prune-point={extra.ste_prune_point!r} (expected post_encoder/encoder_layer)"
+            )
+
         k = int(extra.ste_prune_k)
         tau = float(extra.ste_prune_tau)
+        score_num_layers = int(extra.ste_prune_score_num_layers)
         if k <= 0:
             raise ValueError(f"--ste-prune-k must be > 0, got {k}")
         if tau <= 0:
             raise ValueError(f"--ste-prune-tau must be > 0, got {tau}")
+        if score_num_layers <= 0:
+            raise ValueError(f"--ste-prune-score-num-layers must be > 0, got {score_num_layers}")
         tau_final = extra.ste_prune_tau_final
         if tau_final is not None and float(tau_final) <= 0:
             raise ValueError(f"--ste-prune-tau-final must be > 0, got {tau_final}")
 
         init_stage = "mask" if stage_s == "auto" else stage_s
-        ste_handle = enable_ste_pruning_on_pi05(
+        ve_pruning_handle = enable_ve_pruning_on_pi05(
             model,
-            cfg=OpenPIStePruningConfig(
+            cfg=OpenPIVePruningConfig(
                 k=k,
                 tau=tau,
                 stage=init_stage,
+                point=point_s,
+                score_num_layers=score_num_layers,
                 prune_layer=extra.ste_prune_layer,
                 score_mlp_hidden_dim=extra.ste_prune_score_mlp_hidden_dim,
             ),
         )
-        prune_params = sum(int(p.numel()) for p in ste_handle.trainable_parameters())
+        prune_params = sum(int(p.numel()) for p in ve_pruning_handle.trainable_parameters())
         logging.info(
-            "VLA-OPT STE pruning enabled: k=%s tau=%.3g tau_final=%s stage=%s prune_layer=%s prune_params=%s",
+            "VLA-OPT STE pruning enabled: k=%s tau=%.3g tau_final=%s stage=%s point=%s prune_layer=%s score_num_layers=%s prune_params=%s",
             k,
             tau,
             str(tau_final),
             stage_s,
+            point_s,
             str(extra.ste_prune_layer),
+            score_num_layers,
             prune_params,
         )
 
@@ -684,17 +711,17 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
     end_lr = config.lr_schedule.decay_lr
 
     # Create optimizer with config parameters
-    freeze_base = (stage_a_handle is not None and bool(extra.ve_film_freeze_base)) or (
-        ste_handle is not None and bool(extra.ste_prune_freeze_base)
+    freeze_base = (ve_film_handle is not None and bool(extra.ve_film_freeze_base)) or (
+        ve_pruning_handle is not None and bool(extra.ste_prune_freeze_base)
     )
     if freeze_base:
         for p in model.parameters():
             p.requires_grad = False
-        if stage_a_handle is not None:
-            for p in stage_a_handle.trainable_parameters():
+        if ve_film_handle is not None:
+            for p in ve_film_handle.trainable_parameters():
                 p.requires_grad = True
-        if ste_handle is not None:
-            for p in ste_handle.trainable_parameters():
+        if ve_pruning_handle is not None:
+            for p in ve_pruning_handle.trainable_parameters():
                 p.requires_grad = True
         trainable_params = [p for p in model.parameters() if p.requires_grad]
         if len(trainable_params) == 0:
@@ -784,15 +811,16 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
             ste_keep_ratio = None
             ste_n_tokens = None
 
-            if stage_a_handle is not None or ste_handle is not None:
+            if ve_film_handle is not None or ve_pruning_handle is not None:
                 raw_model = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
                 lang_tokens = getattr(observation, "tokenized_prompt", None)
+                lang_mask = getattr(observation, "tokenized_prompt_mask", None)
                 if lang_tokens is None:
                     raise ValueError("VLA-OPT enabled but observation.tokenized_prompt is None")
                 text_tokens = raw_model.paligemma_with_expert.embed_language_tokens(lang_tokens)
-                if stage_a_handle is not None:
-                    stage_a_handle.set_condition(text_tokens)
-                if ste_handle is not None:
+                if ve_film_handle is not None:
+                    ve_film_handle.set_condition(text_tokens, cond_mask=lang_mask)
+                if ve_pruning_handle is not None:
                     stage_cfg = str(extra.ste_prune_stage or "mask").strip().lower()
                     if stage_cfg in {"1", "stage1"}:
                         stage_cfg = "mask"
@@ -816,10 +844,10 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                         t = min(1.0, max(0.0, float(global_step) / float(denom)))
                         ste_tau = tau0 + (tau1_f - tau0) * t
 
-                    ste_handle.set_stage(ste_stage)  # type: ignore[arg-type]
-                    ste_handle.set_tau(ste_tau)
-                    ste_handle.set_condition(text_tokens)
-                    ste_handle.start_step()
+                    ve_pruning_handle.set_stage(ste_stage)  # type: ignore[arg-type]
+                    ve_pruning_handle.set_tau(ste_tau)
+                    ve_pruning_handle.set_condition(text_tokens, cond_mask=lang_mask)
+                    ve_pruning_handle.start_step()
 
                 if is_main and global_step == 0 and logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.debug(
@@ -838,19 +866,19 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
 
             loss = losses.mean()
 
-            if ste_handle is not None:
+            if ve_pruning_handle is not None:
                 if pruning_losses is None:
                     raise RuntimeError("STE pruning enabled but pruning_losses is not available")
-                if len(ste_handle.step_scores) == 0 or len(ste_handle.step_soft_mask) == 0:
+                if len(ve_pruning_handle.step_scores) == 0 or len(ve_pruning_handle.step_soft_mask) == 0:
                     raise RuntimeError("STE pruning enabled but collected no per-view stats in this step")
-                ste_n_tokens = int(ste_handle.step_scores[0].shape[1])
-                ste_keep_ratio = float(int(ste_handle.k) / float(max(1, ste_n_tokens)))
+                ste_n_tokens = int(ve_pruning_handle.step_scores[0].shape[1])
+                ste_keep_ratio = float(int(ve_pruning_handle.k) / float(max(1, ste_n_tokens)))
 
                 # Aggregate reg losses across views.
                 l_budget_vals = []
                 l_bin_vals = []
-                for soft in ste_handle.step_soft_mask:
-                    lb, lbin = pruning_losses(soft, int(ste_handle.k))
+                for soft in ve_pruning_handle.step_soft_mask:
+                    lb, lbin = pruning_losses(soft, int(ve_pruning_handle.k))
                     l_budget_vals.append(lb)
                     l_bin_vals.append(lbin)
                 ste_l_budget = torch.stack(l_budget_vals).mean()
@@ -859,25 +887,25 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                 loss = loss + float(extra.ste_prune_lambda_budget) * ste_l_budget + float(extra.ste_prune_lambda_bin) * ste_l_bin
 
                 with torch.no_grad():
-                    flat = torch.cat([s.reshape(-1) for s in ste_handle.step_scores], dim=0)
+                    flat = torch.cat([s.reshape(-1) for s in ve_pruning_handle.step_scores], dim=0)
                     ste_scores_mean = float(flat.mean().item())
                     ste_scores_std = float(flat.std().item())
 
                 # IMPORTANT: stop collecting before backward (checkpoint recomputation will re-run forward).
-                ste_handle.finish_step()
+                ve_pruning_handle.finish_step()
 
             # Backward pass
             loss.backward()
 
-            if ste_handle is not None:
+            if ve_pruning_handle is not None:
                 # IMPORTANT: keep condition set during backward when using gradient checkpointing
                 # (checkpoint recomputes forward in backward).
-                ste_handle.clear_condition()
+                ve_pruning_handle.clear_condition()
 
-            if stage_a_handle is not None:
+            if ve_film_handle is not None:
                 # IMPORTANT: keep condition set during backward when using gradient checkpointing
                 # (checkpoint recomputes forward in backward).
-                stage_a_handle.clear_condition()
+                ve_film_handle.clear_condition()
 
             # Log memory usage after backward pass
             if global_step < 5 and is_main and torch.cuda.is_available():
@@ -903,7 +931,7 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                     "learning_rate": optim.param_groups[0]["lr"],
                     "grad_norm": float(grad_norm) if isinstance(grad_norm, torch.Tensor) else grad_norm,
                 }
-                if ste_handle is not None:
+                if ve_pruning_handle is not None:
                     # Note: ste_stage/ste_tau are computed per step when condition is set.
                     info["ste_prune_k"] = int(extra.ste_prune_k)
                     info["ste_prune_tau"] = float(ste_tau) if ste_tau is not None else float(extra.ste_prune_tau)
@@ -919,14 +947,14 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                     info["ste_prune_keep_ratio"] = float(ste_keep_ratio)
                 if ste_n_tokens is not None:
                     info["ste_prune_n_tokens"] = int(ste_n_tokens)
-                collect_stage_a_stats = stage_a_handle is not None and (
+                collect_stage_a_stats = ve_film_handle is not None and (
                     config.wandb_enabled or logging.getLogger().isEnabledFor(logging.DEBUG)
                 )
                 if collect_stage_a_stats:
                     with torch.no_grad():
                         gamma_abs = []
                         beta_abs = []
-                        for film in stage_a_handle.film_generators:
+                        for film in ve_film_handle.film_generators:
                             g, b = film(text_tokens)
                             gamma_abs.append(float(g.abs().mean().item()))
                             beta_abs.append(float(b.abs().mean().item()))
@@ -953,7 +981,7 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                     if avg_grad_norm is not None
                     else f"step={global_step} loss={avg_loss:.4f} lr={avg_lr:.2e} time={elapsed:.1f}s"
                 )
-                if ste_handle is not None:
+                if ve_pruning_handle is not None:
                     stage_last = next(
                         (str(info["ste_prune_stage"]) for info in reversed(infos) if "ste_prune_stage" in info), "?"
                     )
@@ -981,7 +1009,7 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                         + ")"
                     )
                 logging.info(msg)
-                if stage_a_handle is not None and logging.getLogger().isEnabledFor(logging.DEBUG):
+                if ve_film_handle is not None and logging.getLogger().isEnabledFor(logging.DEBUG):
                     vals_g = [info.get("stage_a_gamma_abs_mean") for info in infos if "stage_a_gamma_abs_mean" in info]
                     vals_b = [info.get("stage_a_beta_abs_mean") for info in infos if "stage_a_beta_abs_mean" in info]
                     if len(vals_g) > 0 and len(vals_b) > 0:

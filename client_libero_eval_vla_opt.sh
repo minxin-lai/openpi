@@ -40,7 +40,7 @@ ts="$(date +%Y%m%d_%H%M%S)"
 host="127.0.0.1"
 port="8003"
 suite="libero_spatial"
-trials="20"
+trials="1"
 gpu="0"
 
 video_out=""

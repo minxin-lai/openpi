@@ -30,6 +30,8 @@ def main() -> None:
     )
     parser.add_argument("--device", type=str, default="cpu", help="cpu/cuda/cuda:0 ...")
     parser.add_argument("--ve-film-num-blocks", type=int, default=2)
+    parser.add_argument("--ste-prune-point", type=str, default="post_encoder")
+    parser.add_argument("--ste-prune-score-num-layers", type=int, default=2)
     parser.add_argument("--ste-prune-layer", type=int, default=25)
     parser.add_argument("--ste-prune-k", type=int, default=12)
     parser.add_argument("--ste-prune-tau", type=float, default=1.0)
@@ -43,8 +45,11 @@ def main() -> None:
     os.environ["VLA_OPT_STE_PRUNE"] = "1"
     os.environ["VLA_OPT_STE_PRUNE_K"] = str(int(args.ste_prune_k))
     os.environ["VLA_OPT_STE_PRUNE_STAGE"] = "gather"
+    os.environ["VLA_OPT_STE_PRUNE_POINT"] = str(args.ste_prune_point).strip().lower()
     os.environ["VLA_OPT_STE_PRUNE_TAU"] = str(float(args.ste_prune_tau))
-    os.environ["VLA_OPT_STE_PRUNE_LAYER"] = str(int(args.ste_prune_layer))
+    os.environ["VLA_OPT_STE_PRUNE_SCORE_NUM_LAYERS"] = str(int(args.ste_prune_score_num_layers))
+    if str(args.ste_prune_point).strip().lower() == "encoder_layer":
+        os.environ["VLA_OPT_STE_PRUNE_LAYER"] = str(int(args.ste_prune_layer))
 
     from openpi.policies.policy import Policy
     from openpi.training import config as _config
@@ -110,6 +115,8 @@ def main() -> None:
     print("ckpt:", str(ckpt_dir))
     print("device:", str(args.device))
     print("ve_film_num_blocks:", int(args.ve_film_num_blocks))
+    print("ste_prune_point:", str(args.ste_prune_point))
+    print("ste_prune_score_num_layers:", int(args.ste_prune_score_num_layers))
     print("ste_prune_layer:", int(args.ste_prune_layer))
     print("ste_prune_k:", int(args.ste_prune_k))
     print("actions:", tuple(np.asarray(actions).shape), np.asarray(actions).dtype)
@@ -117,4 +124,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

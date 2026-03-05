@@ -65,5 +65,26 @@ uv run python scripts/generate_debug_kv_report.py --run-dir runs/debug_kv_pi05_l
 ```
 
 ---
+## 8) Tracer：dump + plot overlays（LLM + Vision Encoder）
+
+• # 1) 对最新一次 trace 画原有 overlays + Stage2(shared/unique) 彩色 overlays（默认开启）
+  cd third_party/openpi
+  bash viz_trace_overlays.sh --last
+
+  # 2) 指定 trace 目录
+  bash viz_trace_overlays.sh runs/openpi_pi05_libero_trace_YYYYMMDD_HHMMSS
+
+  # 3) 关闭 Stage2(shared/unique) 彩色 overlays，只画原有 tracer overlays
+  bash viz_trace_overlays.sh --last --no-consensus-viz
+
+  # 4) 自定义 Stage2 参数（默认 pair=0,1 threshold=0.4 margin=0 max=0）
+  bash viz_trace_overlays.sh --last --consensus-pair 0,1 --consensus-threshold 0.4 --consensus-margin 0.0
+  --consensus-max 50
+
+  # Stage2 consensus 文档（设计/实现/中间输出查看/调参）
+  # docs/consensus_stage2.md
+
+  # 5) 原 tracer.plot_routing_overlays 的额外参数仍然支持（放在后面即可）
+  bash viz_trace_overlays.sh --last --heatmap_scale fixed --vmin 0 --vmax 0.003 --alpha 0.75 --cmap inferno
 
 如果你发现仓库里有多个脚本/文档重复：以脚本顶部注释 + `--help` + 本 quickstart 为准。

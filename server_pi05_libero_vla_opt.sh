@@ -12,6 +12,8 @@ set -euo pipefail
 # 默认启用：
 # - VE FiLM: num_blocks=4
 # - VE STE prune: k=64, stage=gather, tau=1.0
+#
+# Dump 默认关闭：用 --dump true 开启 tracer dump（推荐只 dump 第 1 次推理）。
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${script_dir}"
@@ -28,9 +30,12 @@ Options:
   --policy-config <name>      default: pi05_libero_spatial
   --gpu <id>                  default: 0 (CUDA_VISIBLE_DEVICES)
   --port <port>               default: 8003
-  --log <path>                default: runs/openpi_pi05_libero_server_vla_opt_<ts>.log
+  --log <path>                default:
+                               - dump=false: runs/openpi_pi05_libero_server_vla_opt_<ts>.log
+                               - dump=true:  <trace_out_dir>/openpi_pi05_libero_server_vla_opt_<ts>.log
 
 Tracing:
+  --dump <bool>               default: false (false => normal run, no dumps)
   --trace-llm-attn <bool>     default: true
   --trace-attn-layers <csv>   default: "" (empty => last layer)
   --trace-ve-attn <bool>      default: false
@@ -63,13 +68,16 @@ ckpt_dir="checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste/30000"
 gpu="0"
 port="8003"
 
-# tracer：默认开（只 dump 1 次）
+# dump 总控：默认关（false => 正常执行，不 dump）
+dump="true"
+
+# tracer（仅 dump=true 时生效；默认只 dump 1 次）
 trace_llm_attn="true"
 trace_attn_layers=""      # empty => last layer (LLM)
-trace_ve_attn="false"
+trace_ve_attn="true"
 trace_ve_attn_layers=""   # empty => last layer (SigLIP)
 trace_every_n="1"
-trace_max_dumps="1"
+trace_max_dumps="1000"
 trace_out_dir="runs/openpi_pi05_libero_trace_${ts}"
 
 # debug：默认关
@@ -94,6 +102,7 @@ while [[ $# -gt 0 ]]; do
     --gpu) gpu="${2:?}"; shift 2 ;;
     --port) port="${2:?}"; shift 2 ;;
     --log) log_path="${2:?}"; shift 2 ;;
+    --dump) dump="${2:?}"; shift 2 ;;
     --trace-llm-attn) trace_llm_attn="${2:?}"; shift 2 ;;
     --trace-attn-layers) trace_attn_layers="${2:?}"; shift 2 ;;
     --trace-ve-attn) trace_ve_attn="${2:?}"; shift 2 ;;
@@ -125,11 +134,17 @@ if [[ "${policy_config}" == "pi05_libero_spatial" && ! -f "${norm_stats_path}" ]
 fi
 
 mkdir -p runs
-mkdir -p "$(dirname "${trace_out_dir}")"
-echo "${trace_out_dir}" > "runs/_last_openpi_trace_dir.txt" 2>/dev/null || true
+if [[ "${dump}" == "true" ]]; then
+  mkdir -p "${trace_out_dir}"
+  echo "${trace_out_dir}" > "runs/_last_openpi_trace_dir.txt" 2>/dev/null || true
+fi
 
 if [[ -z "${log_path}" ]]; then
-  log_path="runs/openpi_pi05_libero_server_vla_opt_${ts}.log"
+  if [[ "${dump}" == "true" ]]; then
+    log_path="${trace_out_dir}/openpi_pi05_libero_server_vla_opt_${ts}.log"
+  else
+    log_path="runs/openpi_pi05_libero_server_vla_opt_${ts}.log"
+  fi
 fi
 mkdir -p "$(dirname "${log_path}")"
 
@@ -139,24 +154,31 @@ echo "policy_config: ${policy_config}"
 echo "gpu: ${gpu}"
 echo "port: ${port}"
 echo "log: ${log_path}"
-echo "trace_out_dir: ${trace_out_dir}"
+if [[ "${dump}" == "true" ]]; then
+  echo "trace_out_dir: ${trace_out_dir}"
+else
+  echo "trace_out_dir: (disabled)"
+fi
 echo "vla-opt: ve_film_num_blocks=${ve_film_num_blocks} ste_prune_k=${ste_prune_k} stage=${ste_prune_stage} tau=${ste_prune_tau}"
 echo ""
 echo "Client (example):"
 echo "  HOST=127.0.0.1 PORT=${port} TRIALS=20 bash client_libero_eval_vla_opt.sh"
 echo ""
 
-extra_args=(
-  --trace-out-dir "${trace_out_dir}"
-  --trace-every-n "${trace_every_n}"
-  --trace-max-dumps "${trace_max_dumps}"
-  --trace-attn-layers "${trace_attn_layers}"
-)
-if [[ "${trace_llm_attn}" == "true" ]]; then
-  extra_args+=(--trace-dump-attn)
-fi
-if [[ "${trace_ve_attn}" == "true" ]]; then
-  extra_args+=(--trace-dump-ve-attn --trace-ve-attn-layers "${trace_ve_attn_layers}")
+extra_args=()
+if [[ "${dump}" == "true" ]]; then
+  extra_args+=(
+    --trace-out-dir "${trace_out_dir}"
+    --trace-every-n "${trace_every_n}"
+    --trace-max-dumps "${trace_max_dumps}"
+    --trace-attn-layers "${trace_attn_layers}"
+  )
+  if [[ "${trace_llm_attn}" == "true" ]]; then
+    extra_args+=(--trace-dump-attn)
+  fi
+  if [[ "${trace_ve_attn}" == "true" ]]; then
+    extra_args+=(--trace-dump-ve-attn --trace-ve-attn-layers "${trace_ve_attn_layers}")
+  fi
 fi
 if [[ "${debug_token}" == "true" ]]; then
   extra_args+=(
@@ -176,4 +198,3 @@ CUDA_VISIBLE_DEVICES="${gpu}" uv run scripts/serve_policy.py \
   --vla-opt-ste-prune --vla-opt-ste-prune-k "${ste_prune_k}" --vla-opt-ste-prune-stage "${ste_prune_stage}" --vla-opt-ste-prune-tau "${ste_prune_tau}" \
   "${extra_args[@]}" \
   policy:checkpoint --policy.config "${policy_config}" --policy.dir "${ckpt_dir}" 2>&1 | tee "${log_path}"
-

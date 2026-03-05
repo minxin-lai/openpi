@@ -256,10 +256,10 @@ class BaseModelConfig(abc.ABC):
         if _env_flag("VLA_OPT_VE_FILM") or _env_flag("VLA_OPT_STE_PRUNE"):
             try:
                 from vla_opt.integrations.openpi_pi05 import (
-                    OpenPIStageAFiLMConfig,
-                    OpenPIStePruningConfig,
-                    enable_stage_a_film_on_pi05,
-                    enable_ste_pruning_on_pi05,
+                    OpenPIVeFilmConfig,
+                    OpenPIVePruningConfig,
+                    enable_ve_film_on_pi05,
+                    enable_ve_pruning_on_pi05,
                     find_pi05_ste_prune_layer_index,
                     resolve_pi05_vision_encoder_layers,
                 )
@@ -272,8 +272,12 @@ class BaseModelConfig(abc.ABC):
 
             if _env_flag("VLA_OPT_VE_FILM"):
                 num_film_blocks = int(os.environ.get("VLA_OPT_VE_FILM_NUM_BLOCKS", "4"))
-                handle = enable_stage_a_film_on_pi05(model, cfg=OpenPIStageAFiLMConfig(num_film_blocks=num_film_blocks))
+                handle = enable_ve_film_on_pi05(model, cfg=OpenPIVeFilmConfig(num_film_blocks=num_film_blocks))
+                # Backward/forward compatible handle names:
+                # - serving code paths expect `_vla_opt_stage_a_handle`
+                # - some older experiments used `_vla_opt_ve_film_handle`
                 setattr(model, "_vla_opt_stage_a_handle", handle)
+                setattr(model, "_vla_opt_ve_film_handle", handle)
                 logger.info("VLA-OPT VE-FiLM enabled (serve): num_film_blocks=%s", num_film_blocks)
 
             if _env_flag("VLA_OPT_STE_PRUNE"):
@@ -286,9 +290,21 @@ class BaseModelConfig(abc.ABC):
                 if stage not in {"mask", "gather"}:
                     raise ValueError(f"Invalid VLA_OPT_STE_PRUNE_STAGE={stage!r} (expected mask/gather)")
 
+                point = os.environ.get("VLA_OPT_STE_PRUNE_POINT", "post_encoder").strip().lower()
+                if point not in {"post_encoder", "encoder_layer"}:
+                    raise ValueError(
+                        f"Invalid VLA_OPT_STE_PRUNE_POINT={point!r} (expected post_encoder/encoder_layer)"
+                    )
+
                 tau = float(os.environ.get("VLA_OPT_STE_PRUNE_TAU", "1.0"))
                 if tau <= 0:
                     raise ValueError(f"VLA_OPT_STE_PRUNE_TAU must be > 0, got {tau}")
+
+                score_num_layers = int(os.environ.get("VLA_OPT_STE_PRUNE_SCORE_NUM_LAYERS", "3"))
+                if score_num_layers <= 0:
+                    raise ValueError(
+                        f"VLA_OPT_STE_PRUNE_SCORE_NUM_LAYERS must be > 0, got {score_num_layers}"
+                    )
 
                 prune_layer_env = os.environ.get("VLA_OPT_STE_PRUNE_LAYER", "").strip()
                 prune_layer = int(prune_layer_env) if prune_layer_env else None
@@ -296,31 +312,46 @@ class BaseModelConfig(abc.ABC):
                 hidden_env = os.environ.get("VLA_OPT_STE_PRUNE_SCORE_MLP_HIDDEN_DIM", "").strip()
                 score_hidden = int(hidden_env) if hidden_env else None
 
-                handle = enable_ste_pruning_on_pi05(
+                handle = enable_ve_pruning_on_pi05(
                     model,
-                    cfg=OpenPIStePruningConfig(
+                    cfg=OpenPIVePruningConfig(
                         k=k,
                         tau=tau,
                         stage=stage,
+                        point=point,
+                        score_num_layers=score_num_layers,
                         prune_layer=prune_layer,
                         score_mlp_hidden_dim=score_hidden,
                     ),
                 )
+                # Backward/forward compatible handle names:
+                # - serving/inference code paths expect `_vla_opt_ste_prune_handle`
+                # - some older experiments used `_vla_opt_ve_pruning_handle`
                 setattr(model, "_vla_opt_ste_prune_handle", handle)
+                setattr(model, "_vla_opt_ve_pruning_handle", handle)
                 try:
                     layers = resolve_pi05_vision_encoder_layers(model)
-                    setattr(model, "_vla_opt_ste_prune_num_vision_layers", int(len(layers)))
-                    setattr(model, "_vla_opt_ste_prune_layer_resolved", find_pi05_ste_prune_layer_index(model))
+                    num_layers = int(len(layers))
+                    layer_resolved = find_pi05_ste_prune_layer_index(model)
+                    setattr(model, "_vla_opt_ste_prune_num_vision_layers", num_layers)
+                    setattr(model, "_vla_opt_ste_prune_layer_resolved", layer_resolved)
+                    # Keep older debug metadata keys as aliases.
+                    setattr(model, "_vla_opt_ve_pruning_num_vision_layers", num_layers)
+                    setattr(model, "_vla_opt_ve_pruning_layer_resolved", layer_resolved)
                 except Exception:  # pragma: no cover
                     # Best-effort debug metadata (do not affect serving).
                     setattr(model, "_vla_opt_ste_prune_num_vision_layers", None)
                     setattr(model, "_vla_opt_ste_prune_layer_resolved", None)
+                    setattr(model, "_vla_opt_ve_pruning_num_vision_layers", None)
+                    setattr(model, "_vla_opt_ve_pruning_layer_resolved", None)
                 logger.info(
-                    "VLA-OPT STE pruning enabled (serve): k=%s stage=%s tau=%.3g prune_layer=%s",
+                    "VLA-OPT STE pruning enabled (serve): k=%s stage=%s point=%s tau=%.3g prune_layer=%s score_num_layers=%s",
                     k,
                     stage,
+                    point,
                     tau,
                     str(prune_layer),
+                    score_num_layers,
                 )
 
         safetensors.torch.load_model(model, weight_path)

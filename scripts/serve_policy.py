@@ -123,7 +123,9 @@ class Args:
     vla_opt_ste_prune_k: int = 64
     vla_opt_ste_prune_layer: int | None = None
     vla_opt_ste_prune_stage: str = "gather"
+    vla_opt_ste_prune_point: str = "post_encoder"
     vla_opt_ste_prune_tau: float = 1.0
+    vla_opt_ste_prune_score_num_layers: int = 3
     vla_opt_ste_prune_score_mlp_hidden_dim: int | None = None
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
@@ -202,23 +204,33 @@ def main(args: Args) -> None:
                 stage = "gather"
             if stage not in {"mask", "gather"}:
                 raise ValueError(f"Invalid --vla-opt-ste-prune-stage={args.vla_opt_ste_prune_stage!r} (expected mask/gather)")
+            point = str(args.vla_opt_ste_prune_point).strip().lower()
+            if point not in {"post_encoder", "encoder_layer"}:
+                raise ValueError(
+                    f"Invalid --vla-opt-ste-prune-point={args.vla_opt_ste_prune_point!r} "
+                    "(expected post_encoder/encoder_layer)"
+                )
             os.environ["VLA_OPT_STE_PRUNE"] = "1"
             os.environ["VLA_OPT_STE_PRUNE_K"] = str(int(args.vla_opt_ste_prune_k))
             os.environ["VLA_OPT_STE_PRUNE_STAGE"] = stage
+            os.environ["VLA_OPT_STE_PRUNE_POINT"] = point
             os.environ["VLA_OPT_STE_PRUNE_TAU"] = str(float(args.vla_opt_ste_prune_tau))
+            os.environ["VLA_OPT_STE_PRUNE_SCORE_NUM_LAYERS"] = str(int(args.vla_opt_ste_prune_score_num_layers))
             if args.vla_opt_ste_prune_layer is not None:
                 os.environ["VLA_OPT_STE_PRUNE_LAYER"] = str(int(args.vla_opt_ste_prune_layer))
             if args.vla_opt_ste_prune_score_mlp_hidden_dim is not None:
                 os.environ["VLA_OPT_STE_PRUNE_SCORE_MLP_HIDDEN_DIM"] = str(int(args.vla_opt_ste_prune_score_mlp_hidden_dim))
 
         logging.info(
-            "VLA-OPT enabled: ve_film=%s(num_blocks=%s) ste_prune=%s(k=%s stage=%s layer=%s tau=%.3g)",
+            "VLA-OPT enabled: ve_film=%s(num_blocks=%s) ste_prune=%s(k=%s stage=%s point=%s layer=%s score_num_layers=%s tau=%.3g)",
             bool(args.vla_opt_ve_film),
             int(args.vla_opt_ve_film_num_blocks),
             bool(args.vla_opt_ste_prune),
             int(args.vla_opt_ste_prune_k),
             str(args.vla_opt_ste_prune_stage),
+            str(args.vla_opt_ste_prune_point),
             str(args.vla_opt_ste_prune_layer),
+            int(args.vla_opt_ste_prune_score_num_layers),
             float(args.vla_opt_ste_prune_tau),
         )
 
