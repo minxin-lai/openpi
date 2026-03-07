@@ -14,9 +14,6 @@ set -euo pipefail
 #   runs/debug_kv_pi05_libero_YYYYMMDD_HHMMSS/{baseline,vla_opt}/server.log
 #   runs/debug_kv_pi05_libero_YYYYMMDD_HHMMSS/{baseline,vla_opt}/timing.parquet
 #
-# 报告：
-#   uv run python scripts/generate_debug_kv_report.py --run-dir runs/debug_kv_pi05_libero_YYYYMMDD_HHMMSS
-
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${script_dir}"
 
@@ -133,4 +130,3 @@ _run_one "vla_opt" "${vlaopt_ckpt_dir}" "${port_vlaopt}" \
   --vla-opt-ste-prune --vla-opt-ste-prune-k 64 --vla-opt-ste-prune-stage gather --vla-opt-ste-prune-tau 1.0
 
 echo "All done: ${out_root}"
-

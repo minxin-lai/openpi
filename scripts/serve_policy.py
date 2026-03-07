@@ -29,11 +29,7 @@ from openpi.training import config as _config
 #
 # The OPENPI_DEBUG payload is produced by `openpi.models_pytorch.pi0_pytorch.PI0Pytorch.sample_actions`.
 
-# Allow importing repo-root `tracer/` when this OpenPI copy lives under `third_party/openpi`.
 _repo_root = Path(__file__).resolve().parents[3]
-for p in (_repo_root, _repo_root / "src"):
-    if p.exists() and str(p) not in sys.path:
-        sys.path.insert(0, str(p))
 
 
 class EnvMode(enum.Enum):
@@ -75,28 +71,6 @@ class Args:
     port: int = 8000
     # Record the policy's behavior for debugging.
     record: bool = False
-
-    # ============================
-    # Tracing (server-side, optional)
-    # ============================
-    # When set, write per-infer dumps to `trace_out_dir/dumps/*.pt` (and images if enabled).
-    trace_out_dir: str | None = None
-    # Dump reduced expert attention (action tokens -> vision tokens).
-    trace_dump_attn: bool = False
-    # Comma-separated layer indices, e.g. "0,8,16". Empty means "last layer".
-    trace_attn_layers: str = ""
-    # Dump SigLIP vision encoder attention (token-to-token), reduced to per-patch key importance.
-    trace_dump_ve_attn: bool = False
-    # Comma-separated vision encoder layer indices, e.g. "0,8,16". Empty means "last layer".
-    trace_ve_attn_layers: str = ""
-    # Save input images (from client obs) for offline overlays.
-    trace_save_policy_images: bool = True
-    # Print attention stats to logs.
-    trace_print_attn: bool = True
-    # Max dumps to write (0 means unlimited).
-    trace_max_dumps: int = 200
-    # Dump every N inferences (1 means dump every inference).
-    trace_every_n: int = 1
 
     # ============================
     # Debug (token/KV introspection)
@@ -240,34 +214,6 @@ def main(args: Args) -> None:
     # Record the policy's behavior.
     if args.record:
         policy = _policy.PolicyRecorder(policy, "policy_records")
-
-    if args.trace_out_dir and (args.trace_dump_attn or args.trace_dump_ve_attn):
-        from openpi.serving.traced_policy import PolicyTraceConfig, TracedPolicy
-
-        llm_attn_layers = tuple(int(p.strip()) for p in str(args.trace_attn_layers).split(",") if p.strip())
-        ve_attn_layers = tuple(int(p.strip()) for p in str(args.trace_ve_attn_layers).split(",") if p.strip())
-        trace_cfg = PolicyTraceConfig(
-            out_dir=str(args.trace_out_dir),
-            dump_llm_attn=bool(args.trace_dump_attn),
-            llm_attn_layers=llm_attn_layers,
-            dump_ve_attn=bool(args.trace_dump_ve_attn),
-            ve_attn_layers=ve_attn_layers,
-            save_policy_images=bool(args.trace_save_policy_images),
-            print_attn=bool(args.trace_print_attn),
-            max_dumps=int(args.trace_max_dumps),
-            every_n=int(args.trace_every_n),
-        )
-        logging.info(
-            "Tracing enabled: out_dir=%s llm_attn=%s(layers=%s) ve_attn=%s(layers=%s) max_dumps=%s every_n=%s",
-            trace_cfg.out_dir,
-            bool(trace_cfg.dump_llm_attn),
-            llm_attn_layers or ("last",),
-            bool(trace_cfg.dump_ve_attn),
-            ve_attn_layers or ("last",),
-            trace_cfg.max_dumps,
-            trace_cfg.every_n,
-        )
-        policy = TracedPolicy(policy, trace_cfg=trace_cfg)
 
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)

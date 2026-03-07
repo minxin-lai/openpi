@@ -42,49 +42,14 @@ bash compare_pi05_libero_perf.sh
 
 ## 6) 我该用哪个脚本？
 
-- **要 dump + 可视化（生成 `*.pt`）**：启动 `server_pi05_libero_{baseline,vla_opt}.sh`（tracer dump），然后 `bash viz_trace_overlays.sh --last`（画图到 `<trace_dir>/plots/`）
 - **要性能对比**：`bash compare_pi05_libero_perf.sh`（输出 `timing.parquet` + `nvidia_smi.csv`）
-- **要分析/定位（token/KV）**：`bash debug_pi05_libero_kv.sh`（配合 `scripts/generate_debug_kv_report.py`）
+- **要分析/定位（token/KV）**：`bash debug_pi05_libero_kv.sh`（查看 `OPENPI_DEBUG` 与 `timing.parquet`）
 
-## 6) Tracer：dump + plot overlays（LLM + Vision Encoder）
-
-```bash
-cd third_party/openpi
-bash viz_trace_overlays.sh --last
-```
-
-## 7) Debug token/KV（OPENPI_DEBUG）+ 自动报告（写入 runs/）
+## 7) Debug token/KV（OPENPI_DEBUG）
 
 ```bash
 cd third_party/openpi
 bash debug_pi05_libero_kv.sh
 ```
-
-```bash
-uv run python scripts/generate_debug_kv_report.py --run-dir runs/debug_kv_pi05_libero_<...>
-```
-
----
-## 8) Tracer：dump + plot overlays（LLM + Vision Encoder）
-
-• # 1) 对最新一次 trace 画原有 overlays + Stage2(shared/unique) 彩色 overlays（默认开启）
-  cd third_party/openpi
-  bash viz_trace_overlays.sh --last
-
-  # 2) 指定 trace 目录
-  bash viz_trace_overlays.sh runs/openpi_pi05_libero_trace_YYYYMMDD_HHMMSS
-
-  # 3) 关闭 Stage2(shared/unique) 彩色 overlays，只画原有 tracer overlays
-  bash viz_trace_overlays.sh --last --no-consensus-viz
-
-  # 4) 自定义 Stage2 参数（默认 pair=0,1 threshold=0.4 margin=0 max=0）
-  bash viz_trace_overlays.sh --last --consensus-pair 0,1 --consensus-threshold 0.4 --consensus-margin 0.0
-  --consensus-max 50
-
-  # Stage2 consensus 文档（设计/实现/中间输出查看/调参）
-  # docs/consensus_stage2.md
-
-  # 5) 原 tracer.plot_routing_overlays 的额外参数仍然支持（放在后面即可）
-  bash viz_trace_overlays.sh --last --heatmap_scale fixed --vmin 0 --vmax 0.003 --alpha 0.75 --cmap inferno
 
 如果你发现仓库里有多个脚本/文档重复：以脚本顶部注释 + `--help` + 本 quickstart 为准。

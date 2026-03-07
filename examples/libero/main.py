@@ -139,13 +139,6 @@ def eval_libero(args: Args) -> None:
                                 )
                             ),
                             "prompt": str(task_description),
-                            "__trace_meta__": {
-                                "task_suite": str(args.task_suite_name),
-                                "task_id": int(task_id),
-                                "episode_idx": int(episode_idx),
-                                "step_idx": int(t),
-                                "query_idx": int(query_idx),
-                            },
                         }
 
                         # Query model to get action

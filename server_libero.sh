@@ -9,20 +9,11 @@ set -euo pipefail
 #   - server_pi05_libero_vla_opt.sh
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "${script_dir}/../.." && pwd)"
 cd "${script_dir}"
 
 model_path="${MODEL_PATH:-/workspace/laiminxin/models/pi05_libero_pytorch}"
 server_gpu="${SERVER_GPU:-5}"
 port="${PORT:-8002}"
-
-trace_out_dir="${TRACE_OUT_DIR:-runs/openpi_pi05_libero_trace_$(date +%Y%m%d_%H%M%S)}"
-if [[ "${trace_out_dir}" != /* && "${trace_out_dir}" != runs/* ]]; then
-  trace_out_dir="runs/${trace_out_dir}"
-fi
-trace_dump_attn="${TRACE_DUMP_ATTN:-true}"
-trace_attn_layers="${TRACE_ATTN_LAYERS:-0,8,16}" # csv, empty => last layer
-trace_save_images="${TRACE_SAVE_IMAGES:-true}"
 
 debug_token="${DEBUG_TOKEN:-false}"
 debug_max_infer="${DEBUG_MAX_INFER:-1}"
@@ -43,33 +34,12 @@ echo "=== OpenPI LIBERO Server ==="
 echo "model_path: ${model_path}"
 echo "gpu: ${server_gpu}"
 echo "port: ${port}"
-echo "trace_out_dir: ${trace_out_dir}"
 echo "vla-opt: ve_film=${vla_opt_ve_film} ste_prune=${vla_opt_ste_prune}"
 echo ""
-
-mkdir -p "${trace_out_dir}"
 
 [[ -d "${model_path}" ]] || { echo "Error: MODEL_PATH not found: ${model_path}" >&2; exit 1; }
 [[ -f "scripts/serve_policy.py" ]] || { echo "Error: run from third_party/openpi (missing scripts/serve_policy.py)" >&2; exit 1; }
 command -v uv >/dev/null 2>&1 || { echo "Error: uv not found in PATH" >&2; exit 1; }
-
-mkdir -p runs
-echo "${trace_out_dir}" > "runs/_last_openpi_trace_dir.txt"
-echo "third_party/openpi/${trace_out_dir}" > "runs/_last_openpi_trace_exp_dir_from_repo_root.txt"
-echo ""
-echo "After eval (recommended, from repo root):"
-echo "  cd \"${repo_root}/third_party/openpi\" && PYTHONPATH=\"${repo_root}:${PYTHONPATH:-}\" uv run python -m tracer.plot_routing_overlays --exp_dir \"${trace_out_dir}\""
-echo ""
-
-trace_flags=()
-if [[ "${trace_dump_attn}" == "true" ]]; then
-  trace_flags+=(--trace-dump-attn)
-fi
-if [[ "${trace_save_images}" == "true" ]]; then
-  trace_flags+=(--trace-save-policy-images)
-else
-  trace_flags+=(--no-trace-save-policy-images)
-fi
 
 vla_opt_flags=()
 if [[ "${vla_opt_ve_film}" == "true" ]]; then
@@ -105,12 +75,8 @@ export TRITON_AUTOTUNE=0
 CUDA_VISIBLE_DEVICES="${server_gpu}" uv run scripts/serve_policy.py \
   --env LIBERO \
   --port "${port}" \
-  --trace-out-dir "${trace_out_dir}" \
-  --trace-attn-layers "${trace_attn_layers}" \
-  "${trace_flags[@]}" \
   "${debug_flags[@]}" \
   "${vla_opt_flags[@]}" \
   policy:checkpoint \
   --policy.config pi05_libero \
   --policy.dir "${model_path}"
-
