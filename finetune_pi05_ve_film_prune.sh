@@ -28,7 +28,7 @@ exp="vla_opt_pi05_stage_a_ste"
 # 训练输出根目录（checkpoint + train.log）
 checkpoint_base_dir="/workspace/laiminxin/vla-opt/runs/openpi_finetune"
 
-gpus="0,1,2,3"
+gpus="4,5"
 python_bin=".venv/bin/python"
 base_ckpt="/workspace/laiminxin/models/pi05_base_pytorch"
 data_repo_id="/workspace/laiminxin/datasets/lerobot_datasets/libero_spatial"
@@ -105,6 +105,7 @@ if [[ -n "${ste_prune_layer}" ]]; then
   ste_prune_layer_flag=(--ste-prune-layer "${ste_prune_layer}")
 fi
 
+PYTHONPATH="${script_dir}/src${PYTHONPATH:+:${PYTHONPATH}}" \
 CUDA_VISIBLE_DEVICES="${gpus}" "${python_bin}" -m torch.distributed.run --standalone --nproc_per_node="${nproc_per_node}" \
   scripts/train_pytorch.py "${config}" \
   --exp-name "${exp}" "${resume_flag[@]}" \
