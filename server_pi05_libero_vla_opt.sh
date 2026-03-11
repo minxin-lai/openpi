@@ -5,6 +5,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${script_dir}"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
 
 die() { echo "Error: $*" >&2; exit 2; }
 
@@ -23,14 +24,15 @@ Options:
   --ste-prune-k <k>           default: 64
   --ste-prune-stage <stage>   default: gather
   --ste-prune-tau <tau>       default: 1.0
-  --observe-config <path>     default: configs/observe/infer_light.json
+  --observe-config <path>     default: <repo_root>/configs/observe/infer_light.json
+  env OPENPI_TORCH_COMPILE    default: 0
 EOF
 }
 
 ts="$(date +%Y%m%d_%H%M%S)"
 
 policy_config="pi05_libero_spatial"
-ckpt_dir="checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste/30000"
+ckpt_dir="checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste_post_encoder_prune/29999"
 gpu="0"
 port="8003"
 
@@ -38,7 +40,9 @@ ve_film_num_blocks="4"
 ste_prune_k="64"
 ste_prune_stage="gather"
 ste_prune_tau="1.0"
-observe_config="configs/observe/infer_light.json"
+observe_config="${repo_root}/configs/observe/infer_light.json"
+observe_dump_dir=""
+observe_runtime_config=""
 
 log_path=""
 
@@ -79,6 +83,33 @@ if [[ -z "${log_path}" ]]; then
 fi
 mkdir -p "$(dirname "${log_path}")"
 
+if [[ -n "${observe_config}" ]]; then
+  observe_dump_dir="${script_dir}/runs/observe/openpi_pi05_libero_server_vla_opt_${ts}"
+  mkdir -p "${observe_dump_dir}"
+  observe_runtime_config="${observe_dump_dir}/observe_config.json"
+  python3 - "${observe_config}" "${observe_runtime_config}" "${observe_dump_dir}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+src_path = Path(sys.argv[1])
+dst_path = Path(sys.argv[2])
+output_dir = sys.argv[3]
+
+with src_path.open("r", encoding="utf-8") as f:
+    data = json.load(f)
+
+if not isinstance(data, dict):
+    raise ValueError(f"Observe config must be a JSON object: {src_path}")
+
+data["output_dir"] = output_dir
+
+with dst_path.open("w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=True, indent=2)
+    f.write("\n")
+PY
+fi
+
 echo "=== OpenPI Server (vla_opt) ==="
 echo "ckpt: ${ckpt_dir}"
 echo "policy_config: ${policy_config}"
@@ -87,12 +118,34 @@ echo "port: ${port}"
 echo "log: ${log_path}"
 echo "prune: blocks=${ve_film_num_blocks} k=${ste_prune_k} stage=${ste_prune_stage} tau=${ste_prune_tau}"
 echo "observe_config: ${observe_config}"
+if [[ -n "${observe_dump_dir}" ]]; then
+  echo "observe_dump_dir: ${observe_dump_dir}"
+fi
+echo "torch_compile: ${OPENPI_TORCH_COMPILE:-0}"
 
-extra_args=(--vla-opt-observe-config "${observe_config}")
+extra_args=()
+if [[ -n "${observe_runtime_config}" ]]; then
+  extra_args=(--vla-opt-observe-config "${observe_runtime_config}")
+fi
 
+export TRITON_AUTOTUNE=0
+export TORCHINDUCTOR_MAX_AUTOTUNE=0
+export OPENPI_TORCH_COMPILE="${OPENPI_TORCH_COMPILE:-0}"
+export OPENPI_TORCH_COMPILE_MODE="reduce-overhead"
+
+set +e
 CUDA_VISIBLE_DEVICES="${gpu}" uv run scripts/serve_policy.py \
   --env LIBERO --port "${port}" \
   --vla-opt-ve-film --vla-opt-ve-film-num-blocks "${ve_film_num_blocks}" \
   --vla-opt-ste-prune --vla-opt-ste-prune-k "${ste_prune_k}" --vla-opt-ste-prune-stage "${ste_prune_stage}" --vla-opt-ste-prune-tau "${ste_prune_tau}" \
   "${extra_args[@]}" \
   policy:checkpoint --policy.config "${policy_config}" --policy.dir "${ckpt_dir}" 2>&1 | tee "${log_path}"
+status=$?
+set -e
+
+echo ""
+echo "server_log: ${log_path}"
+if [[ -n "${observe_dump_dir}" ]]; then
+  echo "observe_dump_dir: ${observe_dump_dir}"
+fi
+exit "${status}"

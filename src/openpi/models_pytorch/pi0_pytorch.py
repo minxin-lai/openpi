@@ -8,7 +8,7 @@ from torch import Tensor
 from torch import nn
 import torch.nn.functional as F  # noqa: N812
 
-from vla_opt.observe.openpi import emit_openpi_pruning_summary
+from vla_opt.observe.openpi import build_openpi_pruning_tensors, emit_openpi_pruning_summary
 
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
@@ -117,9 +117,9 @@ class PI0Pytorch(nn.Module):
         torch.set_float32_matmul_precision("high")
         # Keep an eager (non-compiled) handle for tracing/debugging; torch.compile often disables forward hooks.
         self._sample_actions_eager = self.sample_actions
-        compile_flag = os.environ.get("OPENPI_TORCH_COMPILE", "1").strip().lower()
+        compile_flag = os.environ.get("OPENPI_TORCH_COMPILE", "0").strip().lower()
         use_compile = compile_flag not in {"0", "false", "no", "n", "off"}
-        compile_mode = os.environ.get("OPENPI_TORCH_COMPILE_MODE", "max-autotune").strip()
+        compile_mode = os.environ.get("OPENPI_TORCH_COMPILE_MODE", "reduce-overhead").strip()
         if use_compile:
             self.sample_actions = torch.compile(self.sample_actions, mode=compile_mode)
             logging.info("torch.compile enabled for PI0Pytorch.sample_actions (mode=%s)", compile_mode)
@@ -228,15 +228,28 @@ class PI0Pytorch(nn.Module):
             last_scores = getattr(ste_handle, "last_scores", None) if ste_handle is not None else None
             if torch.is_tensor(last_scores):
                 n_before = int(last_scores.shape[1])
+            last_idx = getattr(ste_handle, "last_idx", None) if ste_handle is not None else None
+            last_hard_mask = getattr(ste_handle, "last_hard_mask", None) if ste_handle is not None else None
 
             observer = getattr(self, "_vla_opt_observer", None)
             if observer is not None:
+                tensors = None
+                try:
+                    tensors = build_openpi_pruning_tensors(
+                        input_tokens=n_before,
+                        scores=last_scores,
+                        keep_indices=last_idx,
+                        keep_mask=last_hard_mask,
+                    )
+                except Exception:
+                    tensors = None
                 emit_openpi_pruning_summary(
                     observer,
                     phase="post_encoder",
                     view_index=int(view_idx),
                     input_tokens=n_before,
                     output_tokens=int(num_img_embs),
+                    tensors=tensors,
                 )
 
         # Process language tokens

@@ -6,6 +6,11 @@ import socket
 import sys
 from pathlib import Path
 
+_repo_root = Path(__file__).resolve().parents[3]
+_vla_src = _repo_root / "src"
+if _vla_src.exists() and str(_vla_src) not in sys.path:
+    sys.path.insert(0, str(_vla_src))
+
 import tyro
 
 from openpi.policies import policy as _policy
@@ -20,9 +25,6 @@ from openpi.training import config as _config
 #     --vla-opt-ste-prune --vla-opt-ste-prune-k 64 --vla-opt-ste-prune-stage gather --vla-opt-ste-prune-tau 1.0 \
 #     --vla-opt-observe-config configs/observe/infer_light.json \
 #     policy:checkpoint --policy.config pi05_libero_spatial --policy.dir <CKPT_DIR>
-
-_repo_root = Path(__file__).resolve().parents[3]
-
 
 class EnvMode(enum.Enum):
     """Supported environments."""

@@ -24,6 +24,7 @@ echo "model_path: ${model_path}"
 echo "gpu: ${server_gpu}"
 echo "port: ${port}"
 echo "vla-opt: ve_film=${vla_opt_ve_film} ste_prune=${vla_opt_ste_prune}"
+echo "torch_compile: ${OPENPI_TORCH_COMPILE:-0}"
 echo ""
 
 [[ -d "${model_path}" ]] || { echo "Error: MODEL_PATH not found: ${model_path}" >&2; exit 1; }
@@ -50,6 +51,9 @@ if [[ "${vla_opt_ste_prune}" == "true" ]]; then
 fi
 
 export TRITON_AUTOTUNE=0
+export TORCHINDUCTOR_MAX_AUTOTUNE=0
+export OPENPI_TORCH_COMPILE="${OPENPI_TORCH_COMPILE:-0}"
+export OPENPI_TORCH_COMPILE_MODE="reduce-overhead"
 CUDA_VISIBLE_DEVICES="${server_gpu}" uv run scripts/serve_policy.py \
   --env LIBERO \
   --port "${port}" \

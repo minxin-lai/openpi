@@ -19,6 +19,7 @@ Options:
   --gpu <id>                  default: 0 (CUDA_VISIBLE_DEVICES)
   --port <port>               default: 8002
   --log <path>                default: runs/openpi_pi05_libero_server_baseline_<ts>.log
+  env OPENPI_TORCH_COMPILE    default: 0
 EOF
 }
 
@@ -66,10 +67,16 @@ echo "policy_config: ${policy_config}"
 echo "gpu: ${gpu}"
 echo "port: ${port}"
 echo "log: ${log_path}"
+echo "torch_compile: ${OPENPI_TORCH_COMPILE:-0}"
 echo ""
 echo "Client (example):"
 echo "  HOST=127.0.0.1 PORT=${port} TRIALS=20 bash client_libero_eval_baseline.sh"
 echo ""
+
+export TRITON_AUTOTUNE=0
+export TORCHINDUCTOR_MAX_AUTOTUNE=0
+export OPENPI_TORCH_COMPILE="${OPENPI_TORCH_COMPILE:-0}"
+export OPENPI_TORCH_COMPILE_MODE="reduce-overhead"
 
 CUDA_VISIBLE_DEVICES="${gpu}" uv run scripts/serve_policy.py \
   --env LIBERO --port "${port}" \

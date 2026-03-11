@@ -65,6 +65,11 @@ if [[ -z "${log_path}" ]]; then
 fi
 mkdir -p "$(dirname "${log_path}")"
 
+default_gl_backend="glx"
+if [[ -z "${DISPLAY:-}" ]]; then
+  default_gl_backend="egl"
+fi
+
 echo "=== OpenPI LIBERO Client (vla_opt) ==="
 echo "host: ${host}"
 echo "port: ${port}"
@@ -73,15 +78,27 @@ echo "trials: ${trials}"
 echo "gpu: ${gpu}"
 echo "video_out: ${video_out}"
 echo "log: ${log_path}"
+echo "mujoco_gl: ${MUJOCO_GL:-${default_gl_backend}}"
+echo "pyopengl_platform: ${PYOPENGL_PLATFORM:-${default_gl_backend}}"
 echo ""
 
 # shellcheck disable=SC1090
 source "${venv_dir}/bin/activate"
 export PYTHONPATH="${PYTHONPATH:-}:$PWD/third_party/libero"
+export MUJOCO_GL="${MUJOCO_GL:-${default_gl_backend}}"
+export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-${default_gl_backend}}"
 
+set +e
 CUDA_VISIBLE_DEVICES="${gpu}" python examples/libero/main.py \
   --args.host "${host}" \
   --args.port "${port}" \
   --args.task-suite-name "${suite}" \
   --args.num-trials-per-task "${trials}" \
   --args.video-out-path "${video_out}" 2>&1 | tee "${log_path}"
+status=$?
+set -e
+
+echo ""
+echo "video_out: ${video_out}"
+echo "client_log: ${log_path}"
+exit "${status}"
