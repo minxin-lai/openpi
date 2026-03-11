@@ -26,7 +26,12 @@ ls /workspace/laiminxin/datasets/lerobot_datasets/libero_spatial/norm_stats.json
 ## 3) 推理 server（最常用）
 
 - baseline：`bash server_pi05_libero_baseline.sh`
-- vla-opt：`bash server_pi05_libero_vla_opt.sh`
+- vla-opt：
+
+```bash
+cd third_party/openpi
+bash server_pi05_libero_vla_opt.sh --observe-config configs/observe/infer_light.json
+```
 
 ## 4) LIBERO 评测 client
 
@@ -43,13 +48,5 @@ bash compare_pi05_libero_perf.sh
 ## 6) 我该用哪个脚本？
 
 - **要性能对比**：`bash compare_pi05_libero_perf.sh`（输出 `timing.parquet` + `nvidia_smi.csv`）
-- **要分析/定位（token/KV）**：`bash debug_pi05_libero_kv.sh`（查看 `OPENPI_DEBUG` 与 `timing.parquet`）
-
-## 7) Debug token/KV（OPENPI_DEBUG）
-
-```bash
-cd third_party/openpi
-bash debug_pi05_libero_kv.sh
-```
 
 如果你发现仓库里有多个脚本/文档重复：以脚本顶部注释 + `--help` + 本 quickstart 为准。
