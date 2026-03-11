@@ -240,6 +240,7 @@ class PI0Pytorch(nn.Module):
                         scores=last_scores,
                         keep_indices=last_idx,
                         keep_mask=last_hard_mask,
+                        image=img,
                     )
                 except Exception:
                     tensors = None

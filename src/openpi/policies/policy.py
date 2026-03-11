@@ -19,6 +19,7 @@ from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
+TRACE_CONTEXT_KEY = "__vla_opt_trace__"
 
 
 class Policy(BasePolicy):
@@ -66,6 +67,9 @@ class Policy(BasePolicy):
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
+        trace_context = _extract_trace_context(obs)
+        obs = {key: value for key, value in obs.items() if key != TRACE_CONTEXT_KEY}
+
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
@@ -92,6 +96,9 @@ class Policy(BasePolicy):
         if self._is_pytorch_model:
             # VLA-OPT wrappers (if enabled) require setting an instruction-conditioned embedding before vision forward.
             model = self._model
+            observer = getattr(model, "_vla_opt_observer", None)
+            if observer is not None:
+                observer.set_context(trace_context)
             stage_a_handle = getattr(model, "_vla_opt_stage_a_handle", None)
             ste_handle = getattr(model, "_vla_opt_ste_prune_handle", None)
             if stage_a_handle is not None or ste_handle is not None:
@@ -117,6 +124,9 @@ class Policy(BasePolicy):
                     ste_handle.clear_condition()
                 if stage_a_handle is not None:
                     stage_a_handle.clear_condition()
+                observer = getattr(model, "_vla_opt_observer", None)
+                if observer is not None:
+                    observer.clear_context()
 
         outputs = {
             "state": inputs["state"],
@@ -162,3 +172,10 @@ class PolicyRecorder(_base_policy.BasePolicy):
 
         np.save(output_path, np.asarray(data))
         return results
+
+
+def _extract_trace_context(obs: dict[str, Any]) -> dict[str, Any] | None:
+    value = obs.get(TRACE_CONTEXT_KEY)
+    if not isinstance(value, dict):
+        return None
+    return dict(value)

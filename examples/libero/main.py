@@ -3,6 +3,7 @@ import dataclasses
 import logging
 import math
 import pathlib
+import re
 
 import imageio
 from libero.libero import benchmark
@@ -139,6 +140,13 @@ def eval_libero(args: Args) -> None:
                                 )
                             ),
                             "prompt": str(task_description),
+                            "__vla_opt_trace__": {
+                                "task_id": int(task_id),
+                                "task_slug": _slugify_task(task_description),
+                                "task_description": str(task_description),
+                                "episode_idx": int(episode_idx),
+                                "query_idx": int(query_idx),
+                            },
                         }
 
                         # Query model to get action
@@ -214,6 +222,13 @@ def _quat2axisangle(quat):
         return np.zeros(3)
 
     return (quat[:3] * 2.0 * math.acos(quat[3])) / den
+
+
+def _slugify_task(task_description: str) -> str:
+    text = str(task_description).strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    text = text.strip("_")
+    return text or "task"
 
 
 if __name__ == "__main__":
