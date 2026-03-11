@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# LIBERO server launcher (generic; env-overridable)
-#
-# 这是一个“编辑/导出少量变量然后运行”的脚本。
-# 如果你在跑 Pi0.5 Spatial baseline / vla-opt，优先用：
-#   - server_pi05_libero_baseline.sh
-#   - server_pi05_libero_vla_opt.sh
+# LIBERO server launcher (generic).
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${script_dir}"
@@ -14,12 +9,6 @@ cd "${script_dir}"
 model_path="${MODEL_PATH:-/workspace/laiminxin/models/pi05_libero_pytorch}"
 server_gpu="${SERVER_GPU:-5}"
 port="${PORT:-8002}"
-
-debug_token="${DEBUG_TOKEN:-false}"
-debug_max_infer="${DEBUG_MAX_INFER:-1}"
-debug_variant="${DEBUG_VARIANT:-}"
-debug_kv_layers="${DEBUG_KV_LAYERS:-ends}"
-debug_kv_compare="${DEBUG_KV_COMPARE:-false}"
 
 vla_opt_ve_film="${VLA_OPT_VE_FILM:-false}"
 vla_opt_ve_film_num_blocks="${VLA_OPT_VE_FILM_NUM_BLOCKS:-4}"
@@ -60,22 +49,10 @@ if [[ "${vla_opt_ste_prune}" == "true" ]]; then
   fi
 fi
 
-debug_flags=()
-if [[ "${debug_token}" == "true" ]]; then
-  debug_flags+=(--debug-token --debug-max-infer "${debug_max_infer}" --debug-kv-layers "${debug_kv_layers}")
-  if [[ -n "${debug_variant}" ]]; then
-    debug_flags+=(--debug-variant "${debug_variant}")
-  fi
-  if [[ "${debug_kv_compare}" == "true" ]]; then
-    debug_flags+=(--debug-kv-compare)
-  fi
-fi
-
 export TRITON_AUTOTUNE=0
 CUDA_VISIBLE_DEVICES="${server_gpu}" uv run scripts/serve_policy.py \
   --env LIBERO \
   --port "${port}" \
-  "${debug_flags[@]}" \
   "${vla_opt_flags[@]}" \
   policy:checkpoint \
   --policy.config pi05_libero \

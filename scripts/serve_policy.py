@@ -13,21 +13,13 @@ from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
-# Usage (debug token/KV introspection)
+# Usage
 #
-#   # Baseline (prints one OPENPI_DEBUG JSON line in server logs)
-#   uv run scripts/serve_policy.py --env LIBERO --port 8002 \
-#     --debug-token --debug-max-infer 1 --debug-variant baseline --debug-kv-layers ends \
-#     policy:checkpoint --policy.config pi05_libero_spatial --policy.dir <CKPT_DIR>
-#
-#   # VLA-OPT (FiLM + STE pruning; prints one OPENPI_DEBUG JSON line)
 #   uv run scripts/serve_policy.py --env LIBERO --port 8003 \
 #     --vla-opt-ve-film --vla-opt-ve-film-num-blocks 4 \
 #     --vla-opt-ste-prune --vla-opt-ste-prune-k 64 --vla-opt-ste-prune-stage gather --vla-opt-ste-prune-tau 1.0 \
-#     --debug-token --debug-max-infer 1 --debug-variant vla_opt --debug-kv-layers ends \
+#     --vla-opt-observe-config configs/observe/infer_light.json \
 #     policy:checkpoint --policy.config pi05_libero_spatial --policy.dir <CKPT_DIR>
-#
-# The OPENPI_DEBUG payload is produced by `openpi.models_pytorch.pi0_pytorch.PI0Pytorch.sample_actions`.
 
 _repo_root = Path(__file__).resolve().parents[3]
 
@@ -73,20 +65,6 @@ class Args:
     record: bool = False
 
     # ============================
-    # Debug (token/KV introspection)
-    # ============================
-    # Print one-line JSON debug dump from PI0Pytorch.sample_actions (prefix/suffix token lengths + KV cache summary).
-    debug_token: bool = False
-    # Max number of inferences to print per process.
-    debug_max_infer: int = 1
-    # Optional label included in the JSON (useful for baseline vs vla_opt runs).
-    debug_variant: str = ""
-    # Which KV cache layers to include in the summary ("ends", "all", or comma-separated indices like "0,8,16").
-    debug_kv_layers: str = "ends"
-    # Additionally check whether the suffix cache preserves the prefix slice (best-effort, loose bf16 tolerance).
-    debug_kv_compare: bool = False
-
-    # ============================
     # VLA-OPT (Pi0.5 PyTorch wrapper)
     # ============================
     # IMPORTANT: these options must match how the checkpoint was trained/saved.
@@ -101,6 +79,7 @@ class Args:
     vla_opt_ste_prune_tau: float = 1.0
     vla_opt_ste_prune_score_num_layers: int = 3
     vla_opt_ste_prune_score_mlp_hidden_dim: int | None = None
+    vla_opt_observe_config: str | None = None
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
@@ -141,24 +120,18 @@ def create_policy(args: Args) -> _policy.Policy:
     match args.policy:
         case Checkpoint():
             return _policy_config.create_trained_policy(
-                _config.get_config(args.policy.config), args.policy.dir, default_prompt=args.default_prompt
+                _config.get_config(args.policy.config),
+                args.policy.dir,
+                default_prompt=args.default_prompt,
             )
         case Default():
             return create_default_policy(args.env, default_prompt=args.default_prompt)
 
 
 def main(args: Args) -> None:
-    # Configure debug env vars consumed by PI0Pytorch (kept env-based so it works for both training/serving entrypoints).
-    if bool(args.debug_token):
-        os.environ["OPENPI_DEBUG_TOKEN"] = "1"
-        os.environ["OPENPI_DEBUG_MAX_INFER"] = str(int(args.debug_max_infer))
-        if str(args.debug_variant).strip():
-            os.environ["OPENPI_DEBUG_VARIANT"] = str(args.debug_variant).strip()
-        os.environ["OPENPI_DEBUG_KV_LAYERS"] = str(args.debug_kv_layers).strip() or "ends"
-        if bool(args.debug_kv_compare):
-            os.environ["OPENPI_DEBUG_KV_COMPARE"] = "1"
+    _clear_legacy_env()
 
-    if bool(args.vla_opt_ve_film) or bool(args.vla_opt_ste_prune):
+    if bool(args.vla_opt_ve_film) or bool(args.vla_opt_ste_prune) or args.vla_opt_observe_config is not None:
         # Ensure vla-opt is importable when running inside `third_party/openpi/`.
         vla_src = _repo_root / "src"
         if not vla_src.exists():
@@ -194,9 +167,14 @@ def main(args: Args) -> None:
                 os.environ["VLA_OPT_STE_PRUNE_LAYER"] = str(int(args.vla_opt_ste_prune_layer))
             if args.vla_opt_ste_prune_score_mlp_hidden_dim is not None:
                 os.environ["VLA_OPT_STE_PRUNE_SCORE_MLP_HIDDEN_DIM"] = str(int(args.vla_opt_ste_prune_score_mlp_hidden_dim))
+        if args.vla_opt_observe_config is not None:
+            observe_config = str(args.vla_opt_observe_config).strip()
+            if not observe_config:
+                raise ValueError("--vla-opt-observe-config must not be empty")
+            os.environ["VLA_OPT_OBSERVE_CONFIG"] = observe_config
 
         logging.info(
-            "VLA-OPT enabled: ve_film=%s(num_blocks=%s) ste_prune=%s(k=%s stage=%s point=%s layer=%s score_num_layers=%s tau=%.3g)",
+            "VLA-OPT enabled: ve_film=%s(num_blocks=%s) ste_prune=%s(k=%s stage=%s point=%s layer=%s score_num_layers=%s tau=%.3g) observe_config=%s",
             bool(args.vla_opt_ve_film),
             int(args.vla_opt_ve_film_num_blocks),
             bool(args.vla_opt_ste_prune),
@@ -206,6 +184,7 @@ def main(args: Args) -> None:
             str(args.vla_opt_ste_prune_layer),
             int(args.vla_opt_ste_prune_score_num_layers),
             float(args.vla_opt_ste_prune_tau),
+            str(args.vla_opt_observe_config),
         )
 
     policy = create_policy(args)
@@ -226,6 +205,12 @@ def main(args: Args) -> None:
         metadata=policy_metadata,
     )
     server.serve_forever()
+
+
+def _clear_legacy_env() -> None:
+    for name in tuple(os.environ):
+        if name.startswith("VLA_OPT_") or name.startswith("OPENPI_DEBUG_"):
+            os.environ.pop(name, None)
 
 
 if __name__ == "__main__":

@@ -253,7 +253,11 @@ class BaseModelConfig(abc.ABC):
             v = os.environ.get(name, "").strip().lower()
             return v in {"1", "true", "yes", "y", "on"}
 
-        if _env_flag("VLA_OPT_VE_FILM") or _env_flag("VLA_OPT_STE_PRUNE"):
+        if (
+            _env_flag("VLA_OPT_VE_FILM")
+            or _env_flag("VLA_OPT_STE_PRUNE")
+            or os.environ.get("VLA_OPT_OBSERVE_CONFIG", "").strip()
+        ):
             try:
                 from vla_opt.integrations.openpi_pi05 import (
                     OpenPIVeFilmConfig,
@@ -263,6 +267,7 @@ class BaseModelConfig(abc.ABC):
                     find_pi05_ste_prune_layer_index,
                     resolve_pi05_vision_encoder_layers,
                 )
+                from vla_opt.observe.openpi import build_openpi_observer_from_env
             except Exception as e:  # pragma: no cover
                 raise RuntimeError(
                     "VLA-OPT wrappers requested via env vars, but `vla_opt` cannot be imported. "
@@ -353,6 +358,11 @@ class BaseModelConfig(abc.ABC):
                     str(prune_layer),
                     score_num_layers,
                 )
+
+            observer = build_openpi_observer_from_env()
+            if observer is not None:
+                setattr(model, "_vla_opt_observer", observer)
+                logger.info("VLA-OPT observe enabled (serve)")
 
         safetensors.torch.load_model(model, weight_path)
         return model

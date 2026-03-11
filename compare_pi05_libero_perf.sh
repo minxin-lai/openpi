@@ -167,11 +167,6 @@ _run_one() {
   echo ""
 }
 
-# baseline: 防止继承 env 里的 VLA-OPT
-unset VLA_OPT_VE_FILM VLA_OPT_VE_FILM_NUM_BLOCKS
-unset VLA_OPT_STE_PRUNE VLA_OPT_STE_PRUNE_K VLA_OPT_STE_PRUNE_STAGE VLA_OPT_STE_PRUNE_TAU
-unset VLA_OPT_STE_PRUNE_LAYER VLA_OPT_STE_PRUNE_SCORE_MLP_HIDDEN_DIM
-
 export TRITON_AUTOTUNE=0
 export TORCHINDUCTOR_MAX_AUTOTUNE=0
 export OPENPI_TORCH_COMPILE="${openpi_torch_compile}"
@@ -184,4 +179,3 @@ _run_one "vla_opt" "${vlaopt_ckpt_dir}" "${port_vlaopt}" \
   --vla-opt-ste-prune --vla-opt-ste-prune-k 64 --vla-opt-ste-prune-stage gather --vla-opt-ste-prune-tau 1.0
 
 echo "All done: ${out_root}"
-

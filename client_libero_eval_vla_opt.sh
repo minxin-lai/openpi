@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# LIBERO eval client (vla-opt defaults)
-#
-# 你只需要记住：
-#   1) 先起 server：bash server_pi05_libero_vla_opt.sh
-#   2) 再跑 client：bash client_libero_eval_vla_opt.sh
-#
-# 输出：
-# - 视频：runs/libero/videos/vla_opt/...
-# - 日志：runs/libero/logs/vla_opt/...
+# LIBERO eval client for the VLA-OPT server.
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${script_dir}"
@@ -35,7 +27,7 @@ EOF
 ts="$(date +%Y%m%d_%H%M%S)"
 
 # ======================
-# 配置区（建议只改这里）
+# Defaults
 # ======================
 host="127.0.0.1"
 port="8003"
@@ -93,4 +85,3 @@ CUDA_VISIBLE_DEVICES="${gpu}" python examples/libero/main.py \
   --args.task-suite-name "${suite}" \
   --args.num-trials-per-task "${trials}" \
   --args.video-out-path "${video_out}" 2>&1 | tee "${log_path}"
-
