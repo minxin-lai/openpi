@@ -17,6 +17,7 @@ from openpi import transforms as _transforms
 from openpi.models import model as _model
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
+from vla_opt.observe.openpi import emit_openpi_policy_timing
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
 TRACE_CONTEXT_KEY = "__vla_opt_trace__"
@@ -124,15 +125,17 @@ class Policy(BasePolicy):
                     ste_handle.clear_condition()
                 if stage_a_handle is not None:
                     stage_a_handle.clear_condition()
-                observer = getattr(model, "_vla_opt_observer", None)
-                if observer is not None:
-                    observer.clear_context()
 
         outputs = {
             "state": inputs["state"],
             "actions": actions,
         }
         model_time = time.monotonic() - start_time
+        if self._is_pytorch_model:
+            observer = getattr(self._model, "_vla_opt_observer", None)
+            emit_openpi_policy_timing(observer, infer_ms=model_time * 1000.0)
+            if observer is not None:
+                observer.clear_context()
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
         else:
