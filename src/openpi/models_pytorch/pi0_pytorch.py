@@ -228,6 +228,7 @@ class PI0Pytorch(nn.Module):
             last_scores = getattr(ste_handle, "last_scores", None) if ste_handle is not None else None
             if torch.is_tensor(last_scores):
                 n_before = int(last_scores.shape[1])
+            last_select_scores = getattr(ste_handle, "last_select_scores", None) if ste_handle is not None else None
             last_idx = getattr(ste_handle, "last_idx", None) if ste_handle is not None else None
             last_hard_mask = getattr(ste_handle, "last_hard_mask", None) if ste_handle is not None else None
 
@@ -238,6 +239,7 @@ class PI0Pytorch(nn.Module):
                     tensors = build_openpi_pruning_tensors(
                         input_tokens=n_before,
                         scores=last_scores,
+                        smoothed_scores=last_select_scores,
                         keep_indices=last_idx,
                         keep_mask=last_hard_mask,
                         image=img,

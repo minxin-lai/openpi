@@ -316,6 +316,12 @@ class BaseModelConfig(abc.ABC):
 
                 hidden_env = os.environ.get("VLA_OPT_STE_PRUNE_SCORE_MLP_HIDDEN_DIM", "").strip()
                 score_hidden = int(hidden_env) if hidden_env else None
+                gaussian_enabled = _env_flag("VLA_OPT_STE_PRUNE_GAUSSIAN")
+                gaussian_sigma = float(os.environ.get("VLA_OPT_STE_PRUNE_GAUSSIAN_SIGMA", "0.65"))
+                if gaussian_sigma <= 0:
+                    raise ValueError(f"VLA_OPT_STE_PRUNE_GAUSSIAN_SIGMA must be > 0, got {gaussian_sigma}")
+                gaussian_kernel_env = os.environ.get("VLA_OPT_STE_PRUNE_GAUSSIAN_KERNEL_SIZE", "").strip()
+                gaussian_kernel_size = int(gaussian_kernel_env) if gaussian_kernel_env else None
 
                 handle = enable_ve_pruning_on_pi05(
                     model,
@@ -327,6 +333,9 @@ class BaseModelConfig(abc.ABC):
                         score_num_layers=score_num_layers,
                         prune_layer=prune_layer,
                         score_mlp_hidden_dim=score_hidden,
+                        gaussian_smooth_enabled=gaussian_enabled,
+                        gaussian_smooth_sigma=gaussian_sigma,
+                        gaussian_smooth_kernel_size=gaussian_kernel_size,
                     ),
                 )
                 # Backward/forward compatible handle names:
@@ -350,13 +359,16 @@ class BaseModelConfig(abc.ABC):
                     setattr(model, "_vla_opt_ve_pruning_num_vision_layers", None)
                     setattr(model, "_vla_opt_ve_pruning_layer_resolved", None)
                 logger.info(
-                    "VLA-OPT STE pruning enabled (serve): k=%s stage=%s point=%s tau=%.3g prune_layer=%s score_num_layers=%s",
+                    "VLA-OPT STE pruning enabled (serve): k=%s stage=%s point=%s tau=%.3g prune_layer=%s score_num_layers=%s gaussian=%s sigma=%.3g kernel=%s",
                     k,
                     stage,
                     point,
                     tau,
                     str(prune_layer),
                     score_num_layers,
+                    gaussian_enabled,
+                    gaussian_sigma,
+                    str(gaussian_kernel_size),
                 )
 
             observer = build_openpi_observer_from_env()

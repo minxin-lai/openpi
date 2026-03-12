@@ -23,6 +23,7 @@ from openpi.training import config as _config
 #   uv run scripts/serve_policy.py --env LIBERO --port 8003 \
 #     --vla-opt-ve-film --vla-opt-ve-film-num-blocks 4 \
 #     --vla-opt-ste-prune --vla-opt-ste-prune-k 64 --vla-opt-ste-prune-stage gather --vla-opt-ste-prune-tau 1.0 \
+#     --vla-opt-ste-prune-gaussian --vla-opt-ste-prune-gaussian-sigma 0.65 \
 #     --vla-opt-observe-config configs/observe/infer_light.json \
 #     policy:checkpoint --policy.config pi05_libero_spatial --policy.dir <CKPT_DIR>
 
@@ -81,6 +82,9 @@ class Args:
     vla_opt_ste_prune_tau: float = 1.0
     vla_opt_ste_prune_score_num_layers: int = 3
     vla_opt_ste_prune_score_mlp_hidden_dim: int | None = None
+    vla_opt_ste_prune_gaussian: bool = False
+    vla_opt_ste_prune_gaussian_sigma: float = 0.65
+    vla_opt_ste_prune_gaussian_kernel_size: int | None = None
     vla_opt_observe_config: str | None = None
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
@@ -169,6 +173,13 @@ def main(args: Args) -> None:
                 os.environ["VLA_OPT_STE_PRUNE_LAYER"] = str(int(args.vla_opt_ste_prune_layer))
             if args.vla_opt_ste_prune_score_mlp_hidden_dim is not None:
                 os.environ["VLA_OPT_STE_PRUNE_SCORE_MLP_HIDDEN_DIM"] = str(int(args.vla_opt_ste_prune_score_mlp_hidden_dim))
+            if bool(args.vla_opt_ste_prune_gaussian):
+                os.environ["VLA_OPT_STE_PRUNE_GAUSSIAN"] = "1"
+                os.environ["VLA_OPT_STE_PRUNE_GAUSSIAN_SIGMA"] = str(float(args.vla_opt_ste_prune_gaussian_sigma))
+                if args.vla_opt_ste_prune_gaussian_kernel_size is not None:
+                    os.environ["VLA_OPT_STE_PRUNE_GAUSSIAN_KERNEL_SIZE"] = str(
+                        int(args.vla_opt_ste_prune_gaussian_kernel_size)
+                    )
         if args.vla_opt_observe_config is not None:
             observe_config = str(args.vla_opt_observe_config).strip()
             if not observe_config:
@@ -176,7 +187,7 @@ def main(args: Args) -> None:
             os.environ["VLA_OPT_OBSERVE_CONFIG"] = observe_config
 
         logging.info(
-            "VLA-OPT enabled: ve_film=%s(num_blocks=%s) ste_prune=%s(k=%s stage=%s point=%s layer=%s score_num_layers=%s tau=%.3g) observe_config=%s",
+            "VLA-OPT enabled: ve_film=%s(num_blocks=%s) ste_prune=%s(k=%s stage=%s point=%s layer=%s score_num_layers=%s tau=%.3g gaussian=%s sigma=%.3g kernel=%s) observe_config=%s",
             bool(args.vla_opt_ve_film),
             int(args.vla_opt_ve_film_num_blocks),
             bool(args.vla_opt_ste_prune),
@@ -186,6 +197,9 @@ def main(args: Args) -> None:
             str(args.vla_opt_ste_prune_layer),
             int(args.vla_opt_ste_prune_score_num_layers),
             float(args.vla_opt_ste_prune_tau),
+            bool(args.vla_opt_ste_prune_gaussian),
+            float(args.vla_opt_ste_prune_gaussian_sigma),
+            str(args.vla_opt_ste_prune_gaussian_kernel_size),
             str(args.vla_opt_observe_config),
         )
 

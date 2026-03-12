@@ -19,8 +19,9 @@ Options:
   --suite <name>      default: libero_spatial (libero_spatial|libero_object|libero_goal|libero_10)
   --trials <n>        default: 20
   --gpu <id>          default: 0 (CUDA_VISIBLE_DEVICES)
-  --video-out <path>  default: runs/libero/videos/vla_opt/<suite>_<ts>
-  --log <path>        default: runs/libero/logs/vla_opt/<suite>_<ts>.log
+  --run-tag <tag>     default: vla_opt
+  --video-out <path>  default: runs/libero/videos/<run_tag>/<suite>_<ts>
+  --log <path>        default: runs/libero/logs/<run_tag>/<suite>_<ts>.log
 EOF
 }
 
@@ -32,8 +33,9 @@ ts="$(date +%Y%m%d_%H%M%S)"
 host="127.0.0.1"
 port="8003"
 suite="libero_spatial"
-trials="1"
+trials="20"
 gpu="0"
+run_tag="vla_opt"
 
 video_out=""
 log_path=""
@@ -46,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     --suite) suite="${2:?}"; shift 2 ;;
     --trials) trials="${2:?}"; shift 2 ;;
     --gpu) gpu="${2:?}"; shift 2 ;;
+    --run-tag) run_tag="${2:?}"; shift 2 ;;
     --video-out) video_out="${2:?}"; shift 2 ;;
     --log) log_path="${2:?}"; shift 2 ;;
     *) die "Unknown option: $1 (run --help)" ;;
@@ -58,10 +61,10 @@ venv_dir="examples/libero/.venv"
 [[ -d "${venv_dir}" ]] || die "Venv not found: ${venv_dir} (create: uv venv --python 3.8 ${venv_dir})"
 
 if [[ -z "${video_out}" ]]; then
-  video_out="runs/libero/videos/vla_opt/${suite}_${ts}"
+  video_out="runs/libero/videos/${run_tag}/${suite}_${ts}"
 fi
 if [[ -z "${log_path}" ]]; then
-  log_path="runs/libero/logs/vla_opt/${suite}_${ts}.log"
+  log_path="runs/libero/logs/${run_tag}/${suite}_${ts}.log"
 fi
 mkdir -p "$(dirname "${log_path}")"
 
@@ -76,6 +79,7 @@ echo "port: ${port}"
 echo "suite: ${suite}"
 echo "trials: ${trials}"
 echo "gpu: ${gpu}"
+echo "run_tag: ${run_tag}"
 echo "video_out: ${video_out}"
 echo "log: ${log_path}"
 echo "mujoco_gl: ${MUJOCO_GL:-${default_gl_backend}}"

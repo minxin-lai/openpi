@@ -19,11 +19,15 @@ Options:
   --policy-config <name>      default: pi05_libero_spatial
   --gpu <id>                  default: 0 (CUDA_VISIBLE_DEVICES)
   --port <port>               default: 8003
-  --log <path>                default: runs/openpi_pi05_libero_server_vla_opt_<ts>.log
+  --run-tag <tag>             default: vla_opt
+  --log <path>                default: runs/<run_tag>/server_<ts>.log
   --ve-film-num-blocks <n>    default: 4
   --ste-prune-k <k>           default: 64
   --ste-prune-stage <stage>   default: gather
   --ste-prune-tau <tau>       default: 1.0
+  --ste-prune-gaussian        default: off
+  --ste-prune-gaussian-sigma <sigma>      default: 0.65
+  --ste-prune-gaussian-kernel-size <odd>  default: auto
   --observe-config <path>     default: <repo_root>/configs/observe/infer_light.json
   env OPENPI_TORCH_COMPILE    default: 0
 EOF
@@ -35,11 +39,15 @@ policy_config="pi05_libero_spatial"
 ckpt_dir="checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste_post_encoder_prune/29999"
 gpu="0"
 port="8003"
+run_tag="vla_opt"
 
 ve_film_num_blocks="4"
 ste_prune_k="64"
 ste_prune_stage="gather"
 ste_prune_tau="1.0"
+ste_prune_gaussian="0"
+ste_prune_gaussian_sigma="0.65"
+ste_prune_gaussian_kernel_size=""
 observe_config="${repo_root}/configs/observe/infer_light.json"
 observe_dump_dir=""
 observe_runtime_config=""
@@ -53,11 +61,15 @@ while [[ $# -gt 0 ]]; do
     --policy-config) policy_config="${2:?}"; shift 2 ;;
     --gpu) gpu="${2:?}"; shift 2 ;;
     --port) port="${2:?}"; shift 2 ;;
+    --run-tag) run_tag="${2:?}"; shift 2 ;;
     --log) log_path="${2:?}"; shift 2 ;;
     --ve-film-num-blocks) ve_film_num_blocks="${2:?}"; shift 2 ;;
     --ste-prune-k) ste_prune_k="${2:?}"; shift 2 ;;
     --ste-prune-stage) ste_prune_stage="${2:?}"; shift 2 ;;
     --ste-prune-tau) ste_prune_tau="${2:?}"; shift 2 ;;
+    --ste-prune-gaussian) ste_prune_gaussian="1"; shift 1 ;;
+    --ste-prune-gaussian-sigma) ste_prune_gaussian_sigma="${2:?}"; shift 2 ;;
+    --ste-prune-gaussian-kernel-size) ste_prune_gaussian_kernel_size="${2:?}"; shift 2 ;;
     --observe-config) observe_config="${2:?}"; shift 2 ;;
     *) die "Unknown option: $1 (run --help)" ;;
   esac
@@ -79,12 +91,12 @@ fi
 mkdir -p runs
 
 if [[ -z "${log_path}" ]]; then
-  log_path="runs/openpi_pi05_libero_server_vla_opt_${ts}.log"
+  log_path="runs/${run_tag}/server_${ts}.log"
 fi
 mkdir -p "$(dirname "${log_path}")"
 
 if [[ -n "${observe_config}" ]]; then
-  observe_dump_dir="${script_dir}/runs/observe/openpi_pi05_libero_server_vla_opt_${ts}"
+  observe_dump_dir="${script_dir}/runs/observe/${run_tag}_${ts}"
   mkdir -p "${observe_dump_dir}"
   observe_runtime_config="${observe_dump_dir}/observe_config.json"
   python3 - "${observe_config}" "${observe_runtime_config}" "${observe_dump_dir}" <<'PY'
@@ -115,8 +127,9 @@ echo "ckpt: ${ckpt_dir}"
 echo "policy_config: ${policy_config}"
 echo "gpu: ${gpu}"
 echo "port: ${port}"
+echo "run_tag: ${run_tag}"
 echo "log: ${log_path}"
-echo "prune: blocks=${ve_film_num_blocks} k=${ste_prune_k} stage=${ste_prune_stage} tau=${ste_prune_tau}"
+echo "prune: blocks=${ve_film_num_blocks} k=${ste_prune_k} stage=${ste_prune_stage} tau=${ste_prune_tau} gaussian=${ste_prune_gaussian} sigma=${ste_prune_gaussian_sigma} kernel=${ste_prune_gaussian_kernel_size:-auto}"
 echo "observe_config: ${observe_config}"
 if [[ -n "${observe_dump_dir}" ]]; then
   echo "observe_dump_dir: ${observe_dump_dir}"
@@ -126,6 +139,12 @@ echo "torch_compile: ${OPENPI_TORCH_COMPILE:-0}"
 extra_args=()
 if [[ -n "${observe_runtime_config}" ]]; then
   extra_args=(--vla-opt-observe-config "${observe_runtime_config}")
+fi
+if [[ "${ste_prune_gaussian}" == "1" ]]; then
+  extra_args+=(--vla-opt-ste-prune-gaussian --vla-opt-ste-prune-gaussian-sigma "${ste_prune_gaussian_sigma}")
+  if [[ -n "${ste_prune_gaussian_kernel_size}" ]]; then
+    extra_args+=(--vla-opt-ste-prune-gaussian-kernel-size "${ste_prune_gaussian_kernel_size}")
+  fi
 fi
 
 export TRITON_AUTOTUNE=0
