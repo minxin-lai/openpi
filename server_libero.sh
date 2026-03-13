@@ -35,6 +35,9 @@ echo "GPU: ${SERVER_GPU}"
 echo "Port: ${PORT}"
 echo "Trace out: ${TRACE_OUT_DIR}"
 echo "VLA-OPT: ve_film=${VLA_OPT_VE_FILM} ste_prune=${VLA_OPT_STE_PRUNE}"
+echo "torch_compile: ${OPENPI_TORCH_COMPILE:-1}"
+echo "triton_autotune: ${TRITON_AUTOTUNE:-<unset>}"
+echo "torchinductor_max_autotune: ${TORCHINDUCTOR_MAX_AUTOTUNE:-<unset>}"
 echo ""
 
 mkdir -p "${TRACE_OUT_DIR}"
@@ -89,7 +92,8 @@ if [ "${VLA_OPT_STE_PRUNE}" = "true" ]; then
   fi
 fi
 
-export TRITON_AUTOTUNE=0
+export OPENPI_TORCH_COMPILE="${OPENPI_TORCH_COMPILE:-1}"
+export OPENPI_TORCH_COMPILE_MODE="reduce-overhead"
 CUDA_VISIBLE_DEVICES="${SERVER_GPU}" uv run scripts/serve_policy.py \
   --env LIBERO \
   --port "${PORT}" \

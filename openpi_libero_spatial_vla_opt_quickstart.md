@@ -2,7 +2,7 @@
 
 本文覆盖两条最短闭环：
 
-1) **VLA-OPT 版**：`finetune_pi05_ve_film_prune.sh`（训练）→ `server_pi05_libero_vla_opt.sh`（启 server）→ `client_libero_eval.sh`（评测）
+1) **VLA-OPT 版**：`finetune_pi05_ve_film_prune.sh`（训练）→ `server_pi05_libero_vla_opt.sh`（启 server）→ `client_libero_eval_vla_opt.sh`（评测）
 2) **Baseline 版（无 FiLM/STE）**：`finetune_pi05_baseline.sh`（训练）→ `server_pi05_libero_baseline.sh`（启 server）→ `client_libero_eval.sh`（评测）
 
 ---
@@ -16,7 +16,8 @@
 | `third_party/openpi/server_pi05_libero_vla_opt.sh` | **推理 server（带 VLA-OPT wrapper）**：加载你训练出的 PyTorch checkpoint，并开启 `--vla-opt-*` | 你要评测/推理你的 VLA-OPT checkpoint |
 | `third_party/openpi/server_pi05_libero_baseline.sh` | **推理 server（baseline）**：加载你训练出的 PyTorch checkpoint（不启用 `--vla-opt-*`） | 你要评测/推理 baseline checkpoint |
 | `third_party/openpi/server_libero.sh` | **推理 server（通用模板）**：可选 tracing，可选通过 env 打开 `--vla-opt-*` | 你想跑 baseline 或自定义更多 server 参数 |
-| `third_party/openpi/client_libero_eval.sh` | **仿真 client（评测端）**：启动 LIBERO 仿真，连到 server，输出视频 | 你要真正跑 episode 看成功率/视频 |
+| `third_party/openpi/client_libero_eval_vla_opt.sh` | **仿真 client（VLA-OPT 评测端）**：启动 LIBERO 仿真，连到 VLA-OPT server，输出视频 | 你要真正跑 VLA-OPT episode 看成功率/视频 |
+| `third_party/openpi/client_libero_eval.sh` | **仿真 client（通用评测端）**：启动 LIBERO 仿真，连到 server，输出视频 | 你要复用同一套 client 跑通用 server |
 
 ---
 
@@ -96,17 +97,31 @@ bash finetune_pi05_baseline.sh
 
 ### 3.1 启动 VLA-OPT server（加载你的 VLA-OPT checkpoint）
 
-编辑 `third_party/openpi/server_pi05_libero_vla_opt.sh` 顶部变量：
-
-- `CKPT_DIR=.../30000`
-- `POLICY_CONFIG=pi05_libero_spatial`
-- `PORT/GPU`
-
-然后启动：
+一键运行：
 
 ```bash
-cd third_party/openpi
-bash server_pi05_libero_vla_opt.sh
+cd /workspace/laiminxin/vla-opt-openpi-old/third_party/openpi
+GPU=1 bash server_pi05_libero_vla_opt.sh
+```
+
+默认行为：
+
+- 开启 `torch.compile`
+- 不再由 server 脚本强制关闭 Inductor/Triton autotune
+- 默认不启用 trace / dump；性能对比只看 client 日志中的 `policy_infer_ms`（来源于 `policy_timing.infer_ms`）
+
+如需复现旧口径：
+
+```bash
+cd /workspace/laiminxin/vla-opt-openpi-old/third_party/openpi
+OPENPI_TORCH_COMPILE=0 TRITON_AUTOTUNE=0 TORCHINDUCTOR_MAX_AUTOTUNE=0 GPU=1 bash server_pi05_libero_vla_opt.sh
+```
+
+指定 checkpoint 一键运行：
+
+```bash
+cd /workspace/laiminxin/vla-opt-openpi-old/third_party/openpi
+CKPT_DIR=/workspace/laiminxin/vla-opt/third_party/openpi/checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste/29999 GPU=1 bash server_pi05_libero_vla_opt.sh
 ```
 
 这一步会：
@@ -143,15 +158,28 @@ TRACE=1 bash server_pi05_libero_vla_opt.sh
 - `TRACE_ATTN_LAYERS=0,8,16`（空字符串表示只取 last layer）
 - `TRACE_EVERY_N=1`、`TRACE_MAX_DUMPS=200`
 
+性能对比口径：
+
+- 只看 `policy_timing.infer_ms`
+- 默认入口不启用 trace / dump
+- 开启 `TRACE=1` 的运行只用于调试，不和默认性能口径混比
+
 ---
 
 ### 3.2 启动 baseline server（不启用 VLA-OPT）
 
-编辑 `third_party/openpi/server_pi05_libero_baseline.sh` 顶部变量（尤其 `CKPT_DIR`），然后启动：
+一键运行：
 
 ```bash
-cd third_party/openpi
-bash server_pi05_libero_baseline.sh
+cd /workspace/laiminxin/vla-opt-openpi-old/third_party/openpi
+GPU=1 bash server_pi05_libero_baseline.sh
+```
+
+指定 checkpoint 一键运行：
+
+```bash
+cd /workspace/laiminxin/vla-opt-openpi-old/third_party/openpi
+CKPT_DIR=/workspace/laiminxin/vla-opt/third_party/openpi/checkpoints/pi05_libero_spatial/pi05_baseline/30000 GPU=1 bash server_pi05_libero_baseline.sh
 ```
 
 ---
@@ -169,18 +197,11 @@ uv venv --python 3.8 examples/libero/.venv
 
 ### 4.2 每次评测：运行 client
 
-编辑 `third_party/openpi/client_libero_eval.sh` 顶部变量：
-
-- `HOST/PORT`（要与 server 一致）
-- `TASK_SUITE=libero_spatial`（或 `libero_object/libero_goal/libero_10`）
-- `TRIALS`
-- `CLIENT_GPU`
-
-然后运行：
+一键运行：
 
 ```bash
-cd third_party/openpi
-bash client_libero_eval.sh
+cd /workspace/laiminxin/vla-opt-openpi-old/third_party/openpi
+HOST=127.0.0.1 PORT=8002 TRIALS=2 bash client_libero_eval_vla_opt.sh
 ```
 
 视频输出默认在：

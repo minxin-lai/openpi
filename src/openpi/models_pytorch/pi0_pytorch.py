@@ -1,5 +1,6 @@
 import logging
 import math
+import os
 
 import torch
 from torch import Tensor
@@ -111,7 +112,14 @@ class PI0Pytorch(nn.Module):
         torch.set_float32_matmul_precision("high")
         # Keep an eager (non-compiled) handle for tracing/debugging; torch.compile often disables forward hooks.
         self._sample_actions_eager = self.sample_actions
-        self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
+        compile_flag = os.environ.get("OPENPI_TORCH_COMPILE", "1").strip().lower()
+        use_compile = compile_flag not in {"0", "false", "no", "n", "off"}
+        compile_mode = os.environ.get("OPENPI_TORCH_COMPILE_MODE", "reduce-overhead").strip()
+        if use_compile:
+            self.sample_actions = torch.compile(self.sample_actions, mode=compile_mode)
+            logging.info("torch.compile enabled for PI0Pytorch.sample_actions (mode=%s)", compile_mode)
+        else:
+            logging.info("torch.compile disabled for PI0Pytorch.sample_actions (OPENPI_TORCH_COMPILE=%s)", compile_flag)
 
         # Initialize gradient checkpointing flag
         self.gradient_checkpointing_enabled = False

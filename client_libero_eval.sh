@@ -7,12 +7,14 @@ cd "${SCRIPT_DIR}"
 # One-file "edit and run" client launcher.
 # - Edit the values below to pick host/port/suite/trials/GPU.
 # - This runs the LIBERO simulator and talks to the policy server over WebSocket.
+# Example:
+#   HOST=127.0.0.1 PORT=8002 TRIALS=2 CLIENT_GPU=0 bash client_libero_eval.sh
 
-CLIENT_GPU="0"
-HOST="127.0.0.1"
-PORT="8002"
-TASK_SUITE="libero_spatial"   # libero_spatial|libero_object|libero_goal|libero_10
-TRIALS="2"
+CLIENT_GPU="${CLIENT_GPU:-0}"
+HOST="${HOST:-127.0.0.1}"
+PORT="${PORT:-8002}"
+TASK_SUITE="${TASK_SUITE:-libero_spatial}"   # libero_spatial|libero_object|libero_goal|libero_10
+TRIALS="${TRIALS:-2}"
 
 VENV_DIR="examples/libero/.venv"
 VIDEO_OUT_ROOT="runs/libero/videos"

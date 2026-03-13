@@ -149,7 +149,24 @@ def eval_libero(args: Args) -> None:
                         }
 
                         # Query model to get action
-                        action_chunk = client.infer(element)["actions"]
+                        response = client.infer(element)
+                        policy_infer_ms = response.get("policy_timing", {}).get("infer_ms")
+                        if policy_infer_ms is None:
+                            logging.info(
+                                "policy_infer_ms: <missing> task=%s episode=%d query=%d",
+                                str(args.task_suite_name),
+                                episode_idx,
+                                query_idx,
+                            )
+                        else:
+                            logging.info(
+                                "policy_infer_ms: %.2f task=%s episode=%d query=%d",
+                                float(policy_infer_ms),
+                                str(args.task_suite_name),
+                                episode_idx,
+                                query_idx,
+                            )
+                        action_chunk = response["actions"]
                         assert (
                             len(action_chunk) >= args.replan_steps
                         ), f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."

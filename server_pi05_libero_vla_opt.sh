@@ -6,22 +6,23 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # - Edit the values below to point at the checkpoint you want to evaluate.
 # - This starts the LIBERO WebSocket policy server (it does NOT do finetuning).
 # - Enables VLA-OPT wrappers: Vision Encoder (VE) FiLM (num_film_blocks=4) + VE STE prune (K=64, stage=gather).
+# Example:
+#   CKPT_DIR=/workspace/laiminxin/vla-opt/third_party/openpi/checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste/29999 GPU=1 bash server_pi05_libero_vla_opt.sh
 #
-# Tracing (default enabled):
-# - This script enables tracer dump by default.
-# - To reduce noise, it only writes the first dump (typically the first inference of task0/ep0).
-# - If you want more dumps, edit TRACE_MAX_DUMPS below.
+# Tracing (optional):
+# - Disabled by default for timing comparisons.
+# - Set TRACE=1 to enable tracer dump.
 
 # Checkpoint directory must contain `model.safetensors`.
-# Example (this repo): checkpoints/pi05_libero_spatial/vla_opt_pi05_ve_film_prune/30000
-CKPT_DIR="checkpoints/pi05_libero_spatial/vla_opt_pi05_ve_film_prune/30000"
+# Default checkpoint path used for quick local benchmarking.
+CKPT_DIR="${CKPT_DIR:-/workspace/laiminxin/vla-opt/third_party/openpi/checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste/29999}"
 
 # Must match the config used during training.
-POLICY_CONFIG="pi05_libero_spatial"
+POLICY_CONFIG="${POLICY_CONFIG:-pi05_libero_spatial}"
 
 # Server port and GPU.
-PORT="8002"
-GPU="7"
+PORT="${PORT:-8002}"
+GPU="${GPU:-7}"
 [[ -f "${CKPT_DIR}/model.safetensors" ]] || { echo "Missing ${CKPT_DIR}/model.safetensors" >&2; exit 2; }
 
 # OpenPI root, used for placing logs/traces under `third_party/openpi/`.
@@ -42,20 +43,34 @@ fi
 echo "Serve: ckpt=${CKPT_DIR} GPU=${GPU} PORT=${PORT}"
 echo "Client: HOST=127.0.0.1 PORT=${PORT} TRIALS=1 bash client_libero_eval.sh"
 echo "Log: ${SERVER_LOG}"
+echo "torch_compile: ${OPENPI_TORCH_COMPILE:-1}"
+echo "triton_autotune: ${TRITON_AUTOTUNE:-<unset>}"
+echo "torchinductor_max_autotune: ${TORCHINDUCTOR_MAX_AUTOTUNE:-<unset>}"
 
-TRACE_OUT_DIR="${OPENPI_ROOT}/runs/openpi_pi05_libero_trace_${TS}"
-TRACE_ATTN_LAYERS=""   # empty => last layer
-TRACE_EVERY_N="1"
-TRACE_MAX_DUMPS="1"
-echo "Trace: out_dir=${TRACE_OUT_DIR} attn_layers=${TRACE_ATTN_LAYERS:-<last>} every_n=${TRACE_EVERY_N} max_dumps=${TRACE_MAX_DUMPS}"
+TRACE="${TRACE:-0}"
+TRACE_OUT_DIR="${TRACE_OUT_DIR:-${OPENPI_ROOT}/runs/openpi_pi05_libero_trace_${TS}}"
+TRACE_ATTN_LAYERS="${TRACE_ATTN_LAYERS:-}"   # empty => last layer
+TRACE_EVERY_N="${TRACE_EVERY_N:-1}"
+TRACE_MAX_DUMPS="${TRACE_MAX_DUMPS:-1}"
+if [[ "${TRACE}" == "1" ]]; then
+  echo "Trace: on out_dir=${TRACE_OUT_DIR} attn_layers=${TRACE_ATTN_LAYERS:-<last>} every_n=${TRACE_EVERY_N} max_dumps=${TRACE_MAX_DUMPS}"
+else
+  echo "Trace: off"
+fi
 
-EXTRA_ARGS=(
-  --trace-out-dir "${TRACE_OUT_DIR}"
-  --trace-dump-attn
-  --trace-attn-layers "${TRACE_ATTN_LAYERS}"
-  --trace-every-n "${TRACE_EVERY_N}"
-  --trace-max-dumps "${TRACE_MAX_DUMPS}"
-)
+EXTRA_ARGS=()
+if [[ "${TRACE}" == "1" ]]; then
+  EXTRA_ARGS=(
+    --trace-out-dir "${TRACE_OUT_DIR}"
+    --trace-dump-attn
+    --trace-attn-layers "${TRACE_ATTN_LAYERS}"
+    --trace-every-n "${TRACE_EVERY_N}"
+    --trace-max-dumps "${TRACE_MAX_DUMPS}"
+  )
+fi
+
+export OPENPI_TORCH_COMPILE="${OPENPI_TORCH_COMPILE:-1}"
+export OPENPI_TORCH_COMPILE_MODE="reduce-overhead"
 
 CUDA_VISIBLE_DEVICES="${GPU}" uv run scripts/serve_policy.py \
   --env LIBERO --port "${PORT}" \

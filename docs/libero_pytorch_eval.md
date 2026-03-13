@@ -107,6 +107,19 @@ MODEL_PATH="/workspace/laiminxin/models/pi05_libero_pytorch"
 bash server_libero.sh
 ```
 
+默认行为：
+
+- 开启 `torch.compile`
+- 不再由脚本强制关闭 Inductor/Triton autotune
+- 性能对比只看 `policy_timing.infer_ms`
+- 默认不启用 trace / dump
+
+如需复现旧口径：
+
+```bash
+OPENPI_TORCH_COMPILE=0 TRITON_AUTOTUNE=0 TORCHINDUCTOR_MAX_AUTOTUNE=0 bash server_libero.sh
+```
+
 默认端口在脚本里是 `8002`（`PORT=8002`）。保持该终端窗口运行。
 
 ## 5) 启动 LIBERO eval client（仿真端）
