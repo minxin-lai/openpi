@@ -2,9 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "${script_dir}/../.." && pwd)"
 
-bash "${script_dir}/server_pi05_libero_vla_opt.sh" \
+bash "${script_dir}/run_libero_vla_opt_dump.sh" \
   --run-tag vla_opt_default_dump \
-  --observe-config "${repo_root}/configs/observe/infer_debug.json" \
   "$@"

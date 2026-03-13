@@ -28,8 +28,8 @@ Options:
   --ste-prune-gaussian        default: off
   --ste-prune-gaussian-sigma <sigma>      default: 0.65
   --ste-prune-gaussian-kernel-size <odd>  default: auto
-  --observe-config <path>     default: <repo_root>/configs/observe/infer_light.json
-  env OPENPI_TORCH_COMPILE    default: 0
+  --observe-config <path>     default: off
+  env OPENPI_TORCH_COMPILE    default: 1
 EOF
 }
 
@@ -48,7 +48,7 @@ ste_prune_tau="1.0"
 ste_prune_gaussian="0"
 ste_prune_gaussian_sigma="0.65"
 ste_prune_gaussian_kernel_size=""
-observe_config="${repo_root}/configs/observe/infer_light.json"
+observe_config=""
 observe_dump_dir=""
 observe_runtime_config=""
 
@@ -130,11 +130,13 @@ echo "port: ${port}"
 echo "run_tag: ${run_tag}"
 echo "log: ${log_path}"
 echo "prune: blocks=${ve_film_num_blocks} k=${ste_prune_k} stage=${ste_prune_stage} tau=${ste_prune_tau} gaussian=${ste_prune_gaussian} sigma=${ste_prune_gaussian_sigma} kernel=${ste_prune_gaussian_kernel_size:-auto}"
-echo "observe_config: ${observe_config}"
+echo "observe_config: ${observe_config:-<off>}"
 if [[ -n "${observe_dump_dir}" ]]; then
   echo "observe_dump_dir: ${observe_dump_dir}"
 fi
-echo "torch_compile: ${OPENPI_TORCH_COMPILE:-0}"
+echo "torch_compile: ${OPENPI_TORCH_COMPILE:-1}"
+echo "triton_autotune: ${TRITON_AUTOTUNE:-<unset>}"
+echo "torchinductor_max_autotune: ${TORCHINDUCTOR_MAX_AUTOTUNE:-<unset>}"
 
 extra_args=()
 if [[ -n "${observe_runtime_config}" ]]; then
@@ -147,9 +149,7 @@ if [[ "${ste_prune_gaussian}" == "1" ]]; then
   fi
 fi
 
-export TRITON_AUTOTUNE=0
-export TORCHINDUCTOR_MAX_AUTOTUNE=0
-export OPENPI_TORCH_COMPILE="${OPENPI_TORCH_COMPILE:-0}"
+export OPENPI_TORCH_COMPILE="${OPENPI_TORCH_COMPILE:-1}"
 export OPENPI_TORCH_COMPILE_MODE="reduce-overhead"
 
 set +e

@@ -117,7 +117,7 @@ class PI0Pytorch(nn.Module):
         torch.set_float32_matmul_precision("high")
         # Keep an eager (non-compiled) handle for tracing/debugging; torch.compile often disables forward hooks.
         self._sample_actions_eager = self.sample_actions
-        compile_flag = os.environ.get("OPENPI_TORCH_COMPILE", "0").strip().lower()
+        compile_flag = os.environ.get("OPENPI_TORCH_COMPILE", "1").strip().lower()
         use_compile = compile_flag not in {"0", "false", "no", "n", "off"}
         compile_mode = os.environ.get("OPENPI_TORCH_COMPILE_MODE", "reduce-overhead").strip()
         if use_compile:
