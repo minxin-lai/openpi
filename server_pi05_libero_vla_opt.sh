@@ -53,49 +53,56 @@ observe_dump_dir=""
 observe_runtime_config=""
 
 log_path=""
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -h|--help) usage; exit 0 ;;
-    --ckpt-dir) ckpt_dir="${2:?}"; shift 2 ;;
-    --policy-config) policy_config="${2:?}"; shift 2 ;;
-    --gpu) gpu="${2:?}"; shift 2 ;;
-    --port) port="${2:?}"; shift 2 ;;
-    --run-tag) run_tag="${2:?}"; shift 2 ;;
-    --log) log_path="${2:?}"; shift 2 ;;
-    --ve-film-num-blocks) ve_film_num_blocks="${2:?}"; shift 2 ;;
-    --ste-prune-k) ste_prune_k="${2:?}"; shift 2 ;;
-    --ste-prune-stage) ste_prune_stage="${2:?}"; shift 2 ;;
-    --ste-prune-tau) ste_prune_tau="${2:?}"; shift 2 ;;
-    --ste-prune-gaussian) ste_prune_gaussian="1"; shift 1 ;;
-    --ste-prune-gaussian-sigma) ste_prune_gaussian_sigma="${2:?}"; shift 2 ;;
-    --ste-prune-gaussian-kernel-size) ste_prune_gaussian_kernel_size="${2:?}"; shift 2 ;;
-    --observe-config) observe_config="${2:?}"; shift 2 ;;
-    *) die "Unknown option: $1 (run --help)" ;;
-  esac
-done
-
-[[ -f "${ckpt_dir}/model.safetensors" ]] || die "Missing ${ckpt_dir}/model.safetensors"
-command -v uv >/dev/null 2>&1 || die "Missing 'uv' in PATH"
-
 norm_stats_path="/workspace/laiminxin/datasets/lerobot_datasets/libero_spatial/norm_stats.json"
-if [[ "${policy_config}" == "pi05_libero_spatial" && ! -f "${norm_stats_path}" ]]; then
-  echo "Missing norm stats: ${norm_stats_path}" >&2
-  echo "Hint: cd third_party/openpi && uv run scripts/compute_norm_stats.py --config-name ${policy_config}" >&2
-  exit 2
-fi
-if [[ -n "${observe_config}" && ! -f "${observe_config}" ]]; then
-  die "Missing observe config: ${observe_config}"
-fi
 
-mkdir -p runs
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help) usage; exit 0 ;;
+      --ckpt-dir) ckpt_dir="${2:?}"; shift 2 ;;
+      --policy-config) policy_config="${2:?}"; shift 2 ;;
+      --gpu) gpu="${2:?}"; shift 2 ;;
+      --port) port="${2:?}"; shift 2 ;;
+      --run-tag) run_tag="${2:?}"; shift 2 ;;
+      --log) log_path="${2:?}"; shift 2 ;;
+      --ve-film-num-blocks) ve_film_num_blocks="${2:?}"; shift 2 ;;
+      --ste-prune-k) ste_prune_k="${2:?}"; shift 2 ;;
+      --ste-prune-stage) ste_prune_stage="${2:?}"; shift 2 ;;
+      --ste-prune-tau) ste_prune_tau="${2:?}"; shift 2 ;;
+      --ste-prune-gaussian) ste_prune_gaussian="1"; shift 1 ;;
+      --ste-prune-gaussian-sigma) ste_prune_gaussian_sigma="${2:?}"; shift 2 ;;
+      --ste-prune-gaussian-kernel-size) ste_prune_gaussian_kernel_size="${2:?}"; shift 2 ;;
+      --observe-config) observe_config="${2:?}"; shift 2 ;;
+      *) die "Unknown option: $1 (run --help)" ;;
+    esac
+  done
+}
 
-if [[ -z "${log_path}" ]]; then
-  log_path="runs/${run_tag}/server_${ts}.log"
-fi
-mkdir -p "$(dirname "${log_path}")"
+validate_env() {
+  [[ -f "${ckpt_dir}/model.safetensors" ]] || die "Missing ${ckpt_dir}/model.safetensors"
+  command -v uv >/dev/null 2>&1 || die "Missing 'uv' in PATH"
+  if [[ "${policy_config}" == "pi05_libero_spatial" && ! -f "${norm_stats_path}" ]]; then
+    echo "Missing norm stats: ${norm_stats_path}" >&2
+    echo "Hint: cd third_party/openpi && uv run scripts/compute_norm_stats.py --config-name ${policy_config}" >&2
+    exit 2
+  fi
+  if [[ -n "${observe_config}" && ! -f "${observe_config}" ]]; then
+    die "Missing observe config: ${observe_config}"
+  fi
+}
 
-if [[ -n "${observe_config}" ]]; then
+prepare_paths() {
+  mkdir -p runs
+  if [[ -z "${log_path}" ]]; then
+    log_path="runs/${run_tag}/server_${ts}.log"
+  fi
+  mkdir -p "$(dirname "${log_path}")"
+}
+
+prepare_observe_config() {
+  if [[ -z "${observe_config}" ]]; then
+    return
+  fi
   observe_dump_dir="${script_dir}/runs/observe/${run_tag}_${ts}"
   mkdir -p "${observe_dump_dir}"
   observe_runtime_config="${observe_dump_dir}/observe_config.json"
@@ -120,49 +127,63 @@ with dst_path.open("w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=True, indent=2)
     f.write("\n")
 PY
-fi
+}
 
-echo "=== OpenPI Server (vla_opt) ==="
-echo "ckpt: ${ckpt_dir}"
-echo "policy_config: ${policy_config}"
-echo "gpu: ${gpu}"
-echo "port: ${port}"
-echo "run_tag: ${run_tag}"
-echo "log: ${log_path}"
-echo "prune: blocks=${ve_film_num_blocks} k=${ste_prune_k} stage=${ste_prune_stage} tau=${ste_prune_tau} gaussian=${ste_prune_gaussian} sigma=${ste_prune_gaussian_sigma} kernel=${ste_prune_gaussian_kernel_size:-auto}"
-echo "observe_config: ${observe_config:-<off>}"
-if [[ -n "${observe_dump_dir}" ]]; then
-  echo "observe_dump_dir: ${observe_dump_dir}"
-fi
-echo "torch_compile: ${OPENPI_TORCH_COMPILE:-1}"
-echo "triton_autotune: ${TRITON_AUTOTUNE:-<unset>}"
-echo "torchinductor_max_autotune: ${TORCHINDUCTOR_MAX_AUTOTUNE:-<unset>}"
-
-extra_args=()
-if [[ -n "${observe_runtime_config}" ]]; then
-  extra_args=(--vla-opt-observe-config "${observe_runtime_config}")
-fi
-if [[ "${ste_prune_gaussian}" == "1" ]]; then
-  extra_args+=(--vla-opt-ste-prune-gaussian --vla-opt-ste-prune-gaussian-sigma "${ste_prune_gaussian_sigma}")
-  if [[ -n "${ste_prune_gaussian_kernel_size}" ]]; then
-    extra_args+=(--vla-opt-ste-prune-gaussian-kernel-size "${ste_prune_gaussian_kernel_size}")
+print_summary() {
+  echo "=== OpenPI Server (vla_opt) ==="
+  echo "ckpt: ${ckpt_dir}"
+  echo "policy_config: ${policy_config}"
+  echo "gpu: ${gpu}"
+  echo "port: ${port}"
+  echo "run_tag: ${run_tag}"
+  echo "log: ${log_path}"
+  echo "prune: blocks=${ve_film_num_blocks} k=${ste_prune_k} stage=${ste_prune_stage} tau=${ste_prune_tau} gaussian=${ste_prune_gaussian} sigma=${ste_prune_gaussian_sigma} kernel=${ste_prune_gaussian_kernel_size:-auto}"
+  echo "observe_config: ${observe_config:-<off>}"
+  if [[ -n "${observe_dump_dir}" ]]; then
+    echo "observe_dump_dir: ${observe_dump_dir}"
   fi
-fi
+  echo "torch_compile: ${OPENPI_TORCH_COMPILE:-1}"
+  echo "triton_autotune: ${TRITON_AUTOTUNE:-<unset>}"
+  echo "torchinductor_max_autotune: ${TORCHINDUCTOR_MAX_AUTOTUNE:-<unset>}"
+}
 
-export OPENPI_TORCH_COMPILE="${OPENPI_TORCH_COMPILE:-1}"
-export OPENPI_TORCH_COMPILE_MODE="reduce-overhead"
+build_extra_args() {
+  extra_args=()
+  if [[ -n "${observe_runtime_config}" ]]; then
+    extra_args+=(--vla-opt-observe-config "${observe_runtime_config}")
+  fi
+  if [[ "${ste_prune_gaussian}" == "1" ]]; then
+    extra_args+=(--vla-opt-ste-prune-gaussian --vla-opt-ste-prune-gaussian-sigma "${ste_prune_gaussian_sigma}")
+    if [[ -n "${ste_prune_gaussian_kernel_size}" ]]; then
+      extra_args+=(--vla-opt-ste-prune-gaussian-kernel-size "${ste_prune_gaussian_kernel_size}")
+    fi
+  fi
+}
 
-set +e
-CUDA_VISIBLE_DEVICES="${gpu}" uv run scripts/serve_policy.py \
-  --env LIBERO --port "${port}" \
-  --vla-opt-ve-film --vla-opt-ve-film-num-blocks "${ve_film_num_blocks}" \
-  --vla-opt-ste-prune --vla-opt-ste-prune-k "${ste_prune_k}" --vla-opt-ste-prune-stage "${ste_prune_stage}" --vla-opt-ste-prune-tau "${ste_prune_tau}" \
-  "${extra_args[@]}" \
-  policy:checkpoint --policy.config "${policy_config}" --policy.dir "${ckpt_dir}" 2>&1 | tee "${log_path}"
-status=$?
-set -e
+run_server() {
+  export OPENPI_TORCH_COMPILE="${OPENPI_TORCH_COMPILE:-1}"
+  export OPENPI_TORCH_COMPILE_MODE="reduce-overhead"
 
-echo ""
+  set +e
+  CUDA_VISIBLE_DEVICES="${gpu}" uv run scripts/serve_policy.py \
+    --env LIBERO --port "${port}" \
+    --vla-opt-ve-film --vla-opt-ve-film-num-blocks "${ve_film_num_blocks}" \
+    --vla-opt-ste-prune --vla-opt-ste-prune-k "${ste_prune_k}" --vla-opt-ste-prune-stage "${ste_prune_stage}" --vla-opt-ste-prune-tau "${ste_prune_tau}" \
+    "${extra_args[@]}" \
+    policy:checkpoint --policy.config "${policy_config}" --policy.dir "${ckpt_dir}" 2>&1 | tee "${log_path}"
+  status=$?
+  set -e
+}
+
+parse_args "$@"
+validate_env
+prepare_paths
+prepare_observe_config
+print_summary
+build_extra_args
+run_server
+
+echo
 echo "server_log: ${log_path}"
 if [[ -n "${observe_dump_dir}" ]]; then
   echo "observe_dump_dir: ${observe_dump_dir}"

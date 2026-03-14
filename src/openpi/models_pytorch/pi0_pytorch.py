@@ -8,11 +8,11 @@ from torch import Tensor
 from torch import nn
 import torch.nn.functional as F  # noqa: N812
 
-from vla_opt.observe.openpi import build_openpi_pruning_tensors, emit_openpi_pruning_summary
-
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
+from openpi.models_pytorch.observe_adapter import build_openpi_vision_pruning_tensors
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
+from vla_opt.observe.openpi import emit_openpi_pruning_summary
 
 logger = logging.getLogger(__name__)
 
@@ -236,10 +236,11 @@ class PI0Pytorch(nn.Module):
             if observer is not None:
                 tensors = None
                 try:
-                    tensors = build_openpi_pruning_tensors(
-                        input_tokens=n_before,
-                        scores=last_scores,
-                        smoothed_scores=last_select_scores,
+                        tensors = build_openpi_vision_pruning_tensors(
+                            model=self,
+                            input_tokens=n_before,
+                            scores=last_scores,
+                            smoothed_scores=last_select_scores,
                         keep_indices=last_idx,
                         keep_mask=last_hard_mask,
                         image=img,
