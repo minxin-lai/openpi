@@ -24,14 +24,15 @@ die() { echo "Error: $*" >&2; exit 2; }
 # 配置区（建议只改这里）
 # ======================
 config="pi05_libero_spatial"
-exp="vla_opt_pi05_stage_a_ste"
+exp="vla_opt_pi05_post_encoder_ste"
 # 训练输出根目录（checkpoint + train.log）
-checkpoint_base_dir="/workspace/laiminxin/vla-opt/runs/openpi_finetune"
+checkpoint_base_dir="/workspace/laiminxin/vla-opt/third_party/openpi/checkpoints"
 
-gpus="4,5"
+gpus="3"
 python_bin=".venv/bin/python"
 base_ckpt="/workspace/laiminxin/models/pi05_base_pytorch"
 data_repo_id="/workspace/laiminxin/datasets/lerobot_datasets/libero_spatial"
+num_train_steps="60000"
 
 # wandb：默认开；没配 WANDB_API_KEY 会自动关并提示
 wandb_enabled="true"
@@ -40,7 +41,7 @@ resume_mode="auto"   # auto|true|false
 
 # VLA-OPT 训练参数（serving 也要一致）
 ve_film_num_blocks="4"
-ste_prune_k="64"
+ste_prune_k="128"
 ste_prune_stage="auto"     # auto (mask->gather) | mask | gather
 ste_prune_point="post_encoder"  # post_encoder | encoder_layer
 ste_prune_score_num_layers="3"  # FiLM-only mean score layers
@@ -54,6 +55,8 @@ ste_prune_lambda_bin="0.01"
 run_dir="${checkpoint_base_dir}/${config}/${exp}"
 log_file="${run_dir}/train.log"
 mkdir -p "$(dirname "${log_file}")"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+vla_opt_src="${repo_root}/src"
 
 echo "=== Train (vla_opt) ==="
 echo "config/exp: ${config}/${exp}"
@@ -65,12 +68,15 @@ echo "log: ${log_file}"
 echo "ckpt_out: ${run_dir}/<step>/model.safetensors"
 echo ""
 echo "vla-opt: ve_film_num_blocks=${ve_film_num_blocks} ste_prune_k=${ste_prune_k} stage=${ste_prune_stage} point=${ste_prune_point} score_num_layers=${ste_prune_score_num_layers}"
+echo "num_train_steps: ${num_train_steps}"
 echo ""
 
 [[ -x "${python_bin}" ]] || die "Python not found at ${python_bin} (run: uv sync)"
 [[ "${ste_prune_point}" == "post_encoder" || "${ste_prune_point}" == "encoder_layer" ]] || die "ste_prune_point must be post_encoder|encoder_layer"
 [[ "${ste_prune_score_num_layers}" =~ ^[0-9]+$ ]] || die "ste_prune_score_num_layers must be a positive integer"
 [[ "${ste_prune_score_num_layers}" -ge 1 ]] || die "ste_prune_score_num_layers must be >= 1"
+[[ "${num_train_steps}" =~ ^[0-9]+$ ]] || die "num_train_steps must be a positive integer"
+[[ "${num_train_steps}" -ge 1 ]] || die "num_train_steps must be >= 1"
 
 if [[ "${ste_prune_point}" == "post_encoder" ]]; then
   [[ "${ve_film_num_blocks}" =~ ^[0-9]+$ ]] || die "ve_film_num_blocks must be a positive integer"
@@ -105,7 +111,7 @@ if [[ -n "${ste_prune_layer}" ]]; then
   ste_prune_layer_flag=(--ste-prune-layer "${ste_prune_layer}")
 fi
 
-PYTHONPATH="${script_dir}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+PYTHONPATH="${script_dir}/src:${vla_opt_src}${PYTHONPATH:+:${PYTHONPATH}}" \
 CUDA_VISIBLE_DEVICES="${gpus}" "${python_bin}" -m torch.distributed.run --standalone --nproc_per_node="${nproc_per_node}" \
   scripts/train_pytorch.py "${config}" \
   --exp-name "${exp}" "${resume_flag[@]}" \
@@ -115,7 +121,8 @@ CUDA_VISIBLE_DEVICES="${gpus}" "${python_bin}" -m torch.distributed.run --standa
   --batch-size 32 \
   --num-workers 1 \
   --log-interval 100 \
-  --save-interval 5000 \
+  --save-interval 10000 \
+  --num-train-steps "${num_train_steps}" \
   --pytorch-training-precision bfloat16 \
   "${wandb_flag[@]}" \
   --ve-film --ve-film-num-blocks "${ve_film_num_blocks}" --no-ve-film-freeze-base \
