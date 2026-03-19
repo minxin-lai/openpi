@@ -44,7 +44,10 @@ Server:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-bash server_pi05_libero_vla_opt.sh \
+bash tools/serve_pi05_libero.sh \
+  --ckpt-dir checkpoints/pi05_libero_spatial/vla_opt_pi05_post_encoder_128token/60000 \
+  --policy-config pi05_libero_spatial \
+  --opt-config config/pruning/post_encoder.yaml \
   --gpu 3 \
   --port 8003 \
   --run-tag prune50_keep128_nogauss_gpu3
@@ -55,7 +58,7 @@ Client:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-bash client_libero_eval_vla_opt.sh \
+bash tools/eval_libero.sh \
   --host 127.0.0.1 \
   --port 8003 \
   --suite libero_spatial \
@@ -98,12 +101,13 @@ Server:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-bash server_pi05_libero_vla_opt.sh \
+bash tools/serve_pi05_libero.sh \
+  --ckpt-dir checkpoints/pi05_libero_spatial/vla_opt_pi05_post_encoder_128token/60000 \
+  --policy-config pi05_libero_spatial \
+  --opt-config config/pruning/post_encoder_gauss.yaml \
   --gpu 4 \
   --port 8004 \
-  --run-tag prune50_keep128_gauss_gpu4 \
-  --ste-prune-gaussian \
-  --ste-prune-gaussian-sigma 0.65
+  --run-tag prune50_keep128_gauss_gpu4
 ```
 
 Client:
@@ -111,7 +115,7 @@ Client:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-bash client_libero_eval_vla_opt.sh \
+bash tools/eval_libero.sh \
   --host 127.0.0.1 \
   --port 8004 \
   --suite libero_spatial \

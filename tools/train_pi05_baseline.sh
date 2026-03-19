@@ -1,37 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pi0.5 (LIBERO Spatial) baseline finetune
-#
-# 用法：
-#   cd third_party/openpi
-#   bash finetune_pi05_baseline.sh
-#
-# 你通常只需要改：
-# - gpus
-# - base_ckpt / data_repo_id
-
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "${script_dir}"
+repo_dir="$(cd "${script_dir}/.." && pwd)"
+
+cd "${repo_dir}"
 
 die() { echo "Error: $*" >&2; exit 2; }
 
-# ======================
-# 配置区（建议只改这里）
-# ======================
+usage() {
+  cat <<'EOF'
+Usage:
+  bash tools/train_pi05_baseline.sh
+
+This script uses the repo baseline defaults defined inside the file.
+Edit the script if you need to change GPUs, checkpoint paths, or dataset paths.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
 config="pi05_libero_spatial"
 exp="pi05_baseline"
-
-gpus="4,5"  # e.g. "0" or "0,1"
+gpus="4,5"
 python_bin=".venv/bin/python"
 base_ckpt="/workspace/laiminxin/models/pi05_base_pytorch"
 data_repo_id="/workspace/laiminxin/datasets/lerobot_datasets/libero_spatial"
-
-# wandb：默认开；没配 WANDB_API_KEY 会自动关并提示
 wandb_enabled="true"
-
-# 自动 resume：如果 checkpoints 下已经有 model.safetensors，就加 --resume
-resume_mode="auto"   # auto|true|false
+resume_mode="auto"
 
 log_file="checkpoints/${config}/${exp}/train.log"
 mkdir -p "$(dirname "${log_file}")"
@@ -43,7 +42,7 @@ echo "base_ckpt: ${base_ckpt}"
 echo "data_repo_id: ${data_repo_id}"
 echo "log: ${log_file}"
 echo "ckpt_out: checkpoints/${config}/${exp}/<step>/model.safetensors"
-echo ""
+echo
 
 [[ -x "${python_bin}" ]] || die "Python not found at ${python_bin} (run: uv sync)"
 
@@ -81,4 +80,3 @@ CUDA_VISIBLE_DEVICES="${gpus}" "${python_bin}" -m torch.distributed.run --standa
   --pytorch-training-precision bfloat16 \
   "${wandb_flag[@]}" \
   --log-level INFO 2>&1 | tee "${log_file}"
-

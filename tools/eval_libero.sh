@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# LIBERO eval client for the VLA-OPT server.
-
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "${script_dir}"
+repo_dir="$(cd "${script_dir}/.." && pwd)"
 
 die() { echo "Error: $*" >&2; exit 2; }
 
 usage() {
   cat <<'EOF'
 Usage:
-  bash client_libero_eval_vla_opt.sh [options...]
+  bash tools/eval_libero.sh [options...]
 
 Options:
   --host <ip>         default: 127.0.0.1
@@ -19,24 +17,19 @@ Options:
   --suite <name>      default: libero_spatial (libero_spatial|libero_object|libero_goal|libero_10)
   --trials <n>        default: 20
   --gpu <id>          default: 0 (CUDA_VISIBLE_DEVICES)
-  --run-tag <tag>     default: vla_opt
+  --run-tag <tag>     default: pi05_libero_eval
   --video-out <path>  default: runs/libero/videos/<run_tag>/<suite>_<ts>
   --log <path>        default: runs/libero/logs/<run_tag>/<suite>_<ts>.log
 EOF
 }
 
 ts="$(date +%Y%m%d_%H%M%S)"
-
-# ======================
-# Defaults
-# ======================
 host="127.0.0.1"
 port="8003"
 suite="libero_spatial"
 trials="20"
 gpu="0"
-run_tag="vla_opt"
-
+run_tag="pi05_libero_eval"
 video_out=""
 log_path=""
 
@@ -55,6 +48,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+cd "${repo_dir}"
 [[ -f "examples/libero/main.py" ]] || die "Run from third_party/openpi (missing examples/libero/main.py)"
 
 venv_dir="examples/libero/.venv"
@@ -73,7 +67,7 @@ if [[ -z "${DISPLAY:-}" ]]; then
   default_gl_backend="egl"
 fi
 
-echo "=== OpenPI LIBERO Client (vla_opt) ==="
+echo "=== OpenPI LIBERO Client ==="
 echo "host: ${host}"
 echo "port: ${port}"
 echo "suite: ${suite}"
@@ -84,9 +78,9 @@ echo "video_out: ${video_out}"
 echo "log: ${log_path}"
 echo "mujoco_gl: ${MUJOCO_GL:-${default_gl_backend}}"
 echo "pyopengl_platform: ${PYOPENGL_PLATFORM:-${default_gl_backend}}"
-echo ""
+echo
 
-# shellcheck disable=SC1090
+# shellcheck disable=SC1091
 source "${venv_dir}/bin/activate"
 export PYTHONPATH="${PYTHONPATH:-}:$PWD/third_party/libero"
 export MUJOCO_GL="${MUJOCO_GL:-${default_gl_backend}}"
@@ -102,7 +96,7 @@ CUDA_VISIBLE_DEVICES="${gpu}" python examples/libero/main.py \
 status=$?
 set -e
 
-echo ""
+echo
 echo "video_out: ${video_out}"
 echo "client_log: ${log_path}"
 exit "${status}"

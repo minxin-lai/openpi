@@ -314,12 +314,12 @@ ste_prune:
 
 修改文件：
 
-- [server_pi05_libero_vla_opt.sh](/workspace/laiminxin/vla-opt/third_party/openpi/server_pi05_libero_vla_opt.sh)
-- [finetune_pi05_ve_film_prune.sh](/workspace/laiminxin/vla-opt/third_party/openpi/finetune_pi05_ve_film_prune.sh)
+- [tools/serve_pi05_libero.sh](/workspace/laiminxin/vla-opt/third_party/openpi/tools/serve_pi05_libero.sh)
+- [tools/train_pi05_experiment.sh](/workspace/laiminxin/vla-opt/third_party/openpi/tools/train_pi05_experiment.sh)
 
 改动：
 
-- 增加或内置 `--pruning-config`
+- 增加或内置 `--opt-config`
 - 不再硬编码 post-encoder 具体参数集
 
 #### J. Docs

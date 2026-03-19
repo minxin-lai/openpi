@@ -27,22 +27,23 @@ Server:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-bash server_pi05_libero_vla_opt.sh \
+bash tools/serve_pi05_libero.sh \
   --run-tag vla_opt_legacy_inside \
   --ckpt-dir checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste/59999 \
   --policy-config pi05_libero_spatial \
-  --pruning-config config/pruning/legacy_inside_encoder.yaml \
+  --opt-config config/pruning/legacy_inside_encoder.yaml \
   --port 8003
 ```
 
-Client smoke:
+Client:
 
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-bash client_libero_eval_vla_opt_smoke.sh \
+bash tools/eval_libero.sh \
   --host 127.0.0.1 \
   --port 8003 \
+  --trials 1 \
   --run-tag vla_opt_legacy_inside
 ```
 
@@ -58,9 +59,12 @@ Server:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-CKPT_DIR=/workspace/laiminxin/vla-opt/third_party/openpi/checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste/59999 \
-GPU=1 PORT=8002 \
-bash server_pi05_libero_vla_opt.sh
+bash tools/serve_pi05_libero.sh \
+  --ckpt-dir checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste/59999 \
+  --policy-config pi05_libero_spatial \
+  --opt-config config/pruning/legacy_inside_encoder.yaml \
+  --gpu 1 \
+  --port 8002
 ```
 
 Client:
@@ -68,8 +72,13 @@ Client:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-HOST=127.0.0.1 PORT=8002 TRIALS=50 CLIENT_GPU=1 \
-bash client_libero_eval_vla_opt.sh &> encoder_layer_prune_step59999.log
+bash tools/eval_libero.sh \
+  --host 127.0.0.1 \
+  --port 8002 \
+  --trials 50 \
+  --gpu 1 \
+  --run-tag encoder_layer_prune_step59999 \
+  &> encoder_layer_prune_step59999.log
 ```
 
 Outputs:
