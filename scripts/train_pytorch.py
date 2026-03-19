@@ -33,6 +33,10 @@ import sys
 import time
 from pathlib import Path
 
+_MONOREPO_SRC = Path(__file__).resolve().parents[3] / "src"
+if _MONOREPO_SRC.exists():
+    sys.path.insert(0, str(_MONOREPO_SRC))
+
 import jax
 import numpy as np
 import safetensors.torch

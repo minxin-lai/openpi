@@ -5,9 +5,16 @@ will compute the mean and standard deviation of the data in the dataset and save
 to the config assets directory.
 """
 
+import pathlib
+import sys
+
 import numpy as np
 import tqdm
 import tyro
+
+_MONOREPO_SRC = pathlib.Path(__file__).resolve().parents[3] / "src"
+if _MONOREPO_SRC.exists():
+    sys.path.insert(0, str(_MONOREPO_SRC))
 
 import openpi.models.model as _model
 import openpi.shared.normalize as normalize
@@ -53,6 +60,7 @@ def create_torch_dataloader(
         num_workers=num_workers,
         shuffle=shuffle,
         num_batches=num_batches,
+        framework="pytorch",
     )
     return data_loader, num_batches
 
