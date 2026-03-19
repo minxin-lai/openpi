@@ -21,15 +21,12 @@ Options:
   --port <port>               default: 8003
   --run-tag <tag>             default: vla_opt
   --log <path>                default: runs/<run_tag>/server_<ts>.log
-  --ve-film-num-blocks <n>    default: 4
-  --ste-prune-k <k>           default: 64
-  --ste-prune-stage <stage>   default: gather
-  --ste-prune-tau <tau>       default: 1.0
-  --ste-prune-gaussian        default: off
-  --ste-prune-gaussian-sigma <sigma>      default: 0.65
-  --ste-prune-gaussian-kernel-size <odd>  default: auto
+  --pruning-config <path>     default: config/pruning/post_encoder.yaml
   --observe-config <path>     default: off
-  env OPENPI_TORCH_COMPILE    default: 1
+  env OPENPI_TORCH_COMPILE    default: OpenPI default
+  env OPENPI_TORCH_COMPILE_MODE default: OpenPI default
+  env TRITON_AUTOTUNE         default: PyTorch/Triton default
+  env TORCHINDUCTOR_MAX_AUTOTUNE default: PyTorch default
 EOF
 }
 
@@ -40,15 +37,8 @@ ckpt_dir="checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste_post_encoder_
 gpu="0"
 port="8003"
 run_tag="vla_opt"
-
-ve_film_num_blocks="4"
-ste_prune_k="64"
-ste_prune_stage="gather"
-ste_prune_tau="1.0"
-ste_prune_gaussian="0"
-ste_prune_gaussian_sigma="0.65"
-ste_prune_gaussian_kernel_size=""
-observe_config=""
+pruning_config="${script_dir}/config/pruning/post_encoder.yaml"
+observe_config="${repo_root}/configs/observe/infer_light.json"
 observe_dump_dir=""
 observe_runtime_config=""
 
@@ -65,13 +55,7 @@ parse_args() {
       --port) port="${2:?}"; shift 2 ;;
       --run-tag) run_tag="${2:?}"; shift 2 ;;
       --log) log_path="${2:?}"; shift 2 ;;
-      --ve-film-num-blocks) ve_film_num_blocks="${2:?}"; shift 2 ;;
-      --ste-prune-k) ste_prune_k="${2:?}"; shift 2 ;;
-      --ste-prune-stage) ste_prune_stage="${2:?}"; shift 2 ;;
-      --ste-prune-tau) ste_prune_tau="${2:?}"; shift 2 ;;
-      --ste-prune-gaussian) ste_prune_gaussian="1"; shift 1 ;;
-      --ste-prune-gaussian-sigma) ste_prune_gaussian_sigma="${2:?}"; shift 2 ;;
-      --ste-prune-gaussian-kernel-size) ste_prune_gaussian_kernel_size="${2:?}"; shift 2 ;;
+      --pruning-config) pruning_config="${2:?}"; shift 2 ;;
       --observe-config) observe_config="${2:?}"; shift 2 ;;
       *) die "Unknown option: $1 (run --help)" ;;
     esac
@@ -89,6 +73,7 @@ validate_env() {
   if [[ -n "${observe_config}" && ! -f "${observe_config}" ]]; then
     die "Missing observe config: ${observe_config}"
   fi
+  [[ -f "${pruning_config}" ]] || die "Missing pruning config: ${pruning_config}"
 }
 
 prepare_paths() {
@@ -137,12 +122,12 @@ print_summary() {
   echo "port: ${port}"
   echo "run_tag: ${run_tag}"
   echo "log: ${log_path}"
-  echo "prune: blocks=${ve_film_num_blocks} k=${ste_prune_k} stage=${ste_prune_stage} tau=${ste_prune_tau} gaussian=${ste_prune_gaussian} sigma=${ste_prune_gaussian_sigma} kernel=${ste_prune_gaussian_kernel_size:-auto}"
+  echo "pruning_config: ${pruning_config}"
   echo "observe_config: ${observe_config:-<off>}"
   if [[ -n "${observe_dump_dir}" ]]; then
     echo "observe_dump_dir: ${observe_dump_dir}"
   fi
-  echo "torch_compile: ${OPENPI_TORCH_COMPILE:-1}"
+  echo "torch_compile: ${OPENPI_TORCH_COMPILE:-<openpi-default>}"
   echo "triton_autotune: ${TRITON_AUTOTUNE:-<unset>}"
   echo "torchinductor_max_autotune: ${TORCHINDUCTOR_MAX_AUTOTUNE:-<unset>}"
 }
@@ -152,23 +137,13 @@ build_extra_args() {
   if [[ -n "${observe_runtime_config}" ]]; then
     extra_args+=(--vla-opt-observe-config "${observe_runtime_config}")
   fi
-  if [[ "${ste_prune_gaussian}" == "1" ]]; then
-    extra_args+=(--vla-opt-ste-prune-gaussian --vla-opt-ste-prune-gaussian-sigma "${ste_prune_gaussian_sigma}")
-    if [[ -n "${ste_prune_gaussian_kernel_size}" ]]; then
-      extra_args+=(--vla-opt-ste-prune-gaussian-kernel-size "${ste_prune_gaussian_kernel_size}")
-    fi
-  fi
 }
 
 run_server() {
-  export OPENPI_TORCH_COMPILE="${OPENPI_TORCH_COMPILE:-1}"
-  export OPENPI_TORCH_COMPILE_MODE="reduce-overhead"
-
   set +e
   CUDA_VISIBLE_DEVICES="${gpu}" uv run scripts/serve_policy.py \
     --env LIBERO --port "${port}" \
-    --vla-opt-ve-film --vla-opt-ve-film-num-blocks "${ve_film_num_blocks}" \
-    --vla-opt-ste-prune --vla-opt-ste-prune-k "${ste_prune_k}" --vla-opt-ste-prune-stage "${ste_prune_stage}" --vla-opt-ste-prune-tau "${ste_prune_tau}" \
+    --vla-opt-pruning-config "${pruning_config}" \
     "${extra_args[@]}" \
     policy:checkpoint --policy.config "${policy_config}" --policy.dir "${ckpt_dir}" 2>&1 | tee "${log_path}"
   status=$?

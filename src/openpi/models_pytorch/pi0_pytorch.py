@@ -87,6 +87,12 @@ def make_att_2d_masks(pad_masks, att_masks):
     return att_2d_masks & pad_2d_masks
 
 
+def _format_tensor_shape(value: Tensor | None) -> str:
+    if value is None:
+        return "<none>"
+    return str(tuple(int(dim) for dim in value.shape))
+
+
 class PI0Pytorch(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -210,10 +216,23 @@ class PI0Pytorch(nn.Module):
 
         # Process images
         for view_idx, (img, img_mask) in enumerate(zip(images, img_masks, strict=True)):
+            orig_img_emb = None
+            orig_embed_image = getattr(self.paligemma_with_expert, "_vla_opt_orig_embed_image", None)
+            if callable(orig_embed_image):
+                orig_img_emb = orig_embed_image(img)
+
             def image_embed_func(img):
                 return self.paligemma_with_expert.embed_image(img)
 
             img_emb = self._apply_checkpoint(image_embed_func, img)
+
+            print(
+                "[vla-opt] prefix_shapes"
+                f" view_index={int(view_idx)}"
+                f" orig_embed_image.shape={_format_tensor_shape(orig_img_emb)}"
+                f" patched_embed_image.shape={_format_tensor_shape(img_emb)}",
+                flush=True,
+            )
 
             bsize, num_img_embs = img_emb.shape[:2]
 
@@ -278,6 +297,13 @@ class PI0Pytorch(nn.Module):
         # Get batch size from the first dimension of the concatenated tensors
         bsize = pad_masks.shape[0]
         att_masks = att_masks[None, :].expand(bsize, len(att_masks))
+
+        print(
+            "[vla-opt] prefix_shapes"
+            f" prefix_embs.shape={_format_tensor_shape(embs)}"
+            f" total_prefix_tokens={int(embs.shape[1])}",
+            flush=True,
+        )
 
         return embs, pad_masks, att_masks
 

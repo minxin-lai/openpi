@@ -253,21 +253,15 @@ class BaseModelConfig(abc.ABC):
             v = os.environ.get(name, "").strip().lower()
             return v in {"1", "true", "yes", "y", "on"}
 
-        if (
-            _env_flag("VLA_OPT_VE_FILM")
-            or _env_flag("VLA_OPT_STE_PRUNE")
-            or os.environ.get("VLA_OPT_OBSERVE_CONFIG", "").strip()
-        ):
+        pruning_config_path = os.environ.get("VLA_OPT_PRUNING_CONFIG", "").strip()
+
+        if pruning_config_path or os.environ.get("VLA_OPT_OBSERVE_CONFIG", "").strip():
             try:
                 from vla_opt.integrations.openpi_pi05 import (
-                    OpenPIVeFilmConfig,
-                    OpenPIVePruningConfig,
-                    enable_ve_film_on_pi05,
-                    enable_ve_pruning_on_pi05,
-                    find_pi05_ste_prune_layer_index,
-                    resolve_pi05_vision_encoder_layers,
+                    enable_openpi_pruning_from_config,
                 )
                 from vla_opt.observe.openpi import build_openpi_observer_from_env
+                from vla_opt.pruning.openpi_config import load_openpi_pruning_config
             except Exception as e:  # pragma: no cover
                 raise RuntimeError(
                     "VLA-OPT wrappers requested via env vars, but `vla_opt` cannot be imported. "
@@ -275,101 +269,11 @@ class BaseModelConfig(abc.ABC):
                     "(or pass the vla-opt flags to `scripts/serve_policy.py`)."
                 ) from e
 
-            if _env_flag("VLA_OPT_VE_FILM"):
-                num_film_blocks = int(os.environ.get("VLA_OPT_VE_FILM_NUM_BLOCKS", "4"))
-                handle = enable_ve_film_on_pi05(model, cfg=OpenPIVeFilmConfig(num_film_blocks=num_film_blocks))
-                # Backward/forward compatible handle names:
-                # - serving code paths expect `_vla_opt_stage_a_handle`
-                # - some older experiments used `_vla_opt_ve_film_handle`
-                setattr(model, "_vla_opt_stage_a_handle", handle)
-                setattr(model, "_vla_opt_ve_film_handle", handle)
-                logger.info("VLA-OPT VE-FiLM enabled (serve): num_film_blocks=%s", num_film_blocks)
-
-            if _env_flag("VLA_OPT_STE_PRUNE"):
-                k = int(os.environ.get("VLA_OPT_STE_PRUNE_K", "64"))
-                stage = os.environ.get("VLA_OPT_STE_PRUNE_STAGE", "gather").strip().lower()
-                if stage in {"1", "stage1"}:
-                    stage = "mask"
-                if stage in {"2", "stage2"}:
-                    stage = "gather"
-                if stage not in {"mask", "gather"}:
-                    raise ValueError(f"Invalid VLA_OPT_STE_PRUNE_STAGE={stage!r} (expected mask/gather)")
-
-                point = os.environ.get("VLA_OPT_STE_PRUNE_POINT", "post_encoder").strip().lower()
-                if point not in {"post_encoder", "encoder_layer"}:
-                    raise ValueError(
-                        f"Invalid VLA_OPT_STE_PRUNE_POINT={point!r} (expected post_encoder/encoder_layer)"
-                    )
-
-                tau = float(os.environ.get("VLA_OPT_STE_PRUNE_TAU", "1.0"))
-                if tau <= 0:
-                    raise ValueError(f"VLA_OPT_STE_PRUNE_TAU must be > 0, got {tau}")
-
-                score_num_layers = int(os.environ.get("VLA_OPT_STE_PRUNE_SCORE_NUM_LAYERS", "3"))
-                if score_num_layers <= 0:
-                    raise ValueError(
-                        f"VLA_OPT_STE_PRUNE_SCORE_NUM_LAYERS must be > 0, got {score_num_layers}"
-                    )
-
-                prune_layer_env = os.environ.get("VLA_OPT_STE_PRUNE_LAYER", "").strip()
-                prune_layer = int(prune_layer_env) if prune_layer_env else None
-
-                hidden_env = os.environ.get("VLA_OPT_STE_PRUNE_SCORE_MLP_HIDDEN_DIM", "").strip()
-                score_hidden = int(hidden_env) if hidden_env else None
-                gaussian_enabled = _env_flag("VLA_OPT_STE_PRUNE_GAUSSIAN")
-                gaussian_sigma = float(os.environ.get("VLA_OPT_STE_PRUNE_GAUSSIAN_SIGMA", "0.65"))
-                if gaussian_sigma <= 0:
-                    raise ValueError(f"VLA_OPT_STE_PRUNE_GAUSSIAN_SIGMA must be > 0, got {gaussian_sigma}")
-                gaussian_kernel_env = os.environ.get("VLA_OPT_STE_PRUNE_GAUSSIAN_KERNEL_SIZE", "").strip()
-                gaussian_kernel_size = int(gaussian_kernel_env) if gaussian_kernel_env else None
-
-                handle = enable_ve_pruning_on_pi05(
-                    model,
-                    cfg=OpenPIVePruningConfig(
-                        k=k,
-                        tau=tau,
-                        stage=stage,
-                        point=point,
-                        score_num_layers=score_num_layers,
-                        prune_layer=prune_layer,
-                        score_mlp_hidden_dim=score_hidden,
-                        gaussian_smooth_enabled=gaussian_enabled,
-                        gaussian_smooth_sigma=gaussian_sigma,
-                        gaussian_smooth_kernel_size=gaussian_kernel_size,
-                    ),
-                )
-                # Backward/forward compatible handle names:
-                # - serving/inference code paths expect `_vla_opt_ste_prune_handle`
-                # - some older experiments used `_vla_opt_ve_pruning_handle`
-                setattr(model, "_vla_opt_ste_prune_handle", handle)
-                setattr(model, "_vla_opt_ve_pruning_handle", handle)
-                try:
-                    layers = resolve_pi05_vision_encoder_layers(model)
-                    num_layers = int(len(layers))
-                    layer_resolved = find_pi05_ste_prune_layer_index(model)
-                    setattr(model, "_vla_opt_ste_prune_num_vision_layers", num_layers)
-                    setattr(model, "_vla_opt_ste_prune_layer_resolved", layer_resolved)
-                    # Keep older debug metadata keys as aliases.
-                    setattr(model, "_vla_opt_ve_pruning_num_vision_layers", num_layers)
-                    setattr(model, "_vla_opt_ve_pruning_layer_resolved", layer_resolved)
-                except Exception:  # pragma: no cover
-                    # Best-effort debug metadata (do not affect serving).
-                    setattr(model, "_vla_opt_ste_prune_num_vision_layers", None)
-                    setattr(model, "_vla_opt_ste_prune_layer_resolved", None)
-                    setattr(model, "_vla_opt_ve_pruning_num_vision_layers", None)
-                    setattr(model, "_vla_opt_ve_pruning_layer_resolved", None)
-                logger.info(
-                    "VLA-OPT STE pruning enabled (serve): k=%s stage=%s point=%s tau=%.3g prune_layer=%s score_num_layers=%s gaussian=%s sigma=%.3g kernel=%s",
-                    k,
-                    stage,
-                    point,
-                    tau,
-                    str(prune_layer),
-                    score_num_layers,
-                    gaussian_enabled,
-                    gaussian_sigma,
-                    str(gaussian_kernel_size),
-                )
+            if pruning_config_path:
+                runtime_cfg = load_openpi_pruning_config(pruning_config_path)
+                resolved_cfg = runtime_cfg.resolve_for_serve()
+                enable_openpi_pruning_from_config(model, resolved_cfg)
+                logger.info("VLA-OPT pruning enabled (serve): config=%s mode=%s", pruning_config_path, runtime_cfg.mode)
 
             observer = build_openpi_observer_from_env()
             if observer is not None:

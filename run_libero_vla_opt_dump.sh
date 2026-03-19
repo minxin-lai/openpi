@@ -17,7 +17,7 @@ Usage:
   bash run_libero_vla_opt_dump.sh [--gauss] [options...]
 
 Options:
-  --gauss                    enable gaussian pruning
+  --gauss                    use the gaussian pruning YAML
   --ckpt-dir <dir>           forward to server
   --policy-config <name>     forward to server
   --gpu <id>                 default: 0
@@ -174,7 +174,9 @@ prepare_args() {
   mkdir -p "$(dirname "${launcher_log}")"
   server_args+=(--run-tag "$run_tag" --log "$server_log")
   if [[ "${gauss}" == "1" ]]; then
-    server_args+=(--ste-prune-gaussian --ste-prune-gaussian-sigma "0.65")
+    server_args+=(--pruning-config "${script_dir}/config/pruning/post_encoder_gauss.yaml")
+  else
+    server_args+=(--pruning-config "${script_dir}/config/pruning/post_encoder.yaml")
   fi
   client_args+=(--run-tag "${run_tag}" --host "${host}" --port "${port}")
 }

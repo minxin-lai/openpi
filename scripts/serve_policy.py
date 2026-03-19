@@ -21,9 +21,7 @@ from openpi.training import config as _config
 # Usage
 #
 #   uv run scripts/serve_policy.py --env LIBERO --port 8003 \
-#     --vla-opt-ve-film --vla-opt-ve-film-num-blocks 4 \
-#     --vla-opt-ste-prune --vla-opt-ste-prune-k 64 --vla-opt-ste-prune-stage gather --vla-opt-ste-prune-tau 1.0 \
-#     --vla-opt-ste-prune-gaussian --vla-opt-ste-prune-gaussian-sigma 0.65 \
+#     --vla-opt-pruning-config config/pruning/post_encoder.yaml \
 #     --vla-opt-observe-config configs/observe/infer_light.json \
 #     policy:checkpoint --policy.config pi05_libero_spatial --policy.dir <CKPT_DIR>
 
@@ -70,21 +68,8 @@ class Args:
     # ============================
     # VLA-OPT (Pi0.5 PyTorch wrapper)
     # ============================
-    # IMPORTANT: these options must match how the checkpoint was trained/saved.
-    vla_opt_ve_film: bool = False
-    vla_opt_ve_film_num_blocks: int = 4
-
-    vla_opt_ste_prune: bool = False
-    vla_opt_ste_prune_k: int = 64
-    vla_opt_ste_prune_layer: int | None = None
-    vla_opt_ste_prune_stage: str = "gather"
-    vla_opt_ste_prune_point: str = "post_encoder"
-    vla_opt_ste_prune_tau: float = 1.0
-    vla_opt_ste_prune_score_num_layers: int = 3
-    vla_opt_ste_prune_score_mlp_hidden_dim: int | None = None
-    vla_opt_ste_prune_gaussian: bool = False
-    vla_opt_ste_prune_gaussian_sigma: float = 0.65
-    vla_opt_ste_prune_gaussian_kernel_size: int | None = None
+    # IMPORTANT: this YAML must match how the checkpoint was trained/saved.
+    vla_opt_pruning_config: str | None = None
     vla_opt_observe_config: str | None = None
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
@@ -137,7 +122,7 @@ def create_policy(args: Args) -> _policy.Policy:
 def main(args: Args) -> None:
     _clear_legacy_env()
 
-    if bool(args.vla_opt_ve_film) or bool(args.vla_opt_ste_prune) or args.vla_opt_observe_config is not None:
+    if args.vla_opt_pruning_config is not None or args.vla_opt_observe_config is not None:
         # Ensure vla-opt is importable when running inside `third_party/openpi/`.
         vla_src = _repo_root / "src"
         if not vla_src.exists():
@@ -145,41 +130,11 @@ def main(args: Args) -> None:
         if str(vla_src) not in sys.path:
             sys.path.insert(0, str(vla_src))
 
-        # Pass wrapper config to OpenPI's PyTorch loader via env vars (read in `openpi.models.model.BaseModelConfig.load_pytorch`).
-        if bool(args.vla_opt_ve_film):
-            os.environ["VLA_OPT_VE_FILM"] = "1"
-            os.environ["VLA_OPT_VE_FILM_NUM_BLOCKS"] = str(int(args.vla_opt_ve_film_num_blocks))
-        if bool(args.vla_opt_ste_prune):
-            stage = str(args.vla_opt_ste_prune_stage).strip().lower()
-            if stage in {"1", "stage1"}:
-                stage = "mask"
-            if stage in {"2", "stage2"}:
-                stage = "gather"
-            if stage not in {"mask", "gather"}:
-                raise ValueError(f"Invalid --vla-opt-ste-prune-stage={args.vla_opt_ste_prune_stage!r} (expected mask/gather)")
-            point = str(args.vla_opt_ste_prune_point).strip().lower()
-            if point not in {"post_encoder", "encoder_layer"}:
-                raise ValueError(
-                    f"Invalid --vla-opt-ste-prune-point={args.vla_opt_ste_prune_point!r} "
-                    "(expected post_encoder/encoder_layer)"
-                )
-            os.environ["VLA_OPT_STE_PRUNE"] = "1"
-            os.environ["VLA_OPT_STE_PRUNE_K"] = str(int(args.vla_opt_ste_prune_k))
-            os.environ["VLA_OPT_STE_PRUNE_STAGE"] = stage
-            os.environ["VLA_OPT_STE_PRUNE_POINT"] = point
-            os.environ["VLA_OPT_STE_PRUNE_TAU"] = str(float(args.vla_opt_ste_prune_tau))
-            os.environ["VLA_OPT_STE_PRUNE_SCORE_NUM_LAYERS"] = str(int(args.vla_opt_ste_prune_score_num_layers))
-            if args.vla_opt_ste_prune_layer is not None:
-                os.environ["VLA_OPT_STE_PRUNE_LAYER"] = str(int(args.vla_opt_ste_prune_layer))
-            if args.vla_opt_ste_prune_score_mlp_hidden_dim is not None:
-                os.environ["VLA_OPT_STE_PRUNE_SCORE_MLP_HIDDEN_DIM"] = str(int(args.vla_opt_ste_prune_score_mlp_hidden_dim))
-            if bool(args.vla_opt_ste_prune_gaussian):
-                os.environ["VLA_OPT_STE_PRUNE_GAUSSIAN"] = "1"
-                os.environ["VLA_OPT_STE_PRUNE_GAUSSIAN_SIGMA"] = str(float(args.vla_opt_ste_prune_gaussian_sigma))
-                if args.vla_opt_ste_prune_gaussian_kernel_size is not None:
-                    os.environ["VLA_OPT_STE_PRUNE_GAUSSIAN_KERNEL_SIZE"] = str(
-                        int(args.vla_opt_ste_prune_gaussian_kernel_size)
-                    )
+        if args.vla_opt_pruning_config is not None:
+            pruning_config = str(args.vla_opt_pruning_config).strip()
+            if not pruning_config:
+                raise ValueError("--vla-opt-pruning-config must not be empty")
+            os.environ["VLA_OPT_PRUNING_CONFIG"] = pruning_config
         if args.vla_opt_observe_config is not None:
             observe_config = str(args.vla_opt_observe_config).strip()
             if not observe_config:
@@ -187,19 +142,8 @@ def main(args: Args) -> None:
             os.environ["VLA_OPT_OBSERVE_CONFIG"] = observe_config
 
         logging.info(
-            "VLA-OPT enabled: ve_film=%s(num_blocks=%s) ste_prune=%s(k=%s stage=%s point=%s layer=%s score_num_layers=%s tau=%.3g gaussian=%s sigma=%.3g kernel=%s) observe_config=%s",
-            bool(args.vla_opt_ve_film),
-            int(args.vla_opt_ve_film_num_blocks),
-            bool(args.vla_opt_ste_prune),
-            int(args.vla_opt_ste_prune_k),
-            str(args.vla_opt_ste_prune_stage),
-            str(args.vla_opt_ste_prune_point),
-            str(args.vla_opt_ste_prune_layer),
-            int(args.vla_opt_ste_prune_score_num_layers),
-            float(args.vla_opt_ste_prune_tau),
-            bool(args.vla_opt_ste_prune_gaussian),
-            float(args.vla_opt_ste_prune_gaussian_sigma),
-            str(args.vla_opt_ste_prune_gaussian_kernel_size),
+            "VLA-OPT enabled: pruning_config=%s observe_config=%s",
+            str(args.vla_opt_pruning_config),
             str(args.vla_opt_observe_config),
         )
 
