@@ -1,38 +1,48 @@
-# Pi0.5 Encoder Layer Prune 测试记录
+# 方案附录: pruning_inside_encoder
 
-## Git Labels
+本页只维护 `pruning_inside_encoder` 路径的当前可运行配置与命令，不再混合维护历史结果表。
 
-- `worktree`: `/workspace/laiminxin/vla-opt-openpi-old/third_party/openpi`
-- `branch`: `legacy-vla_opt_pi05_stage_a_ste_encoder_layer_prune`
-- `commit`: `5bd8d12`
-- `tag_exact`: `none`
-- `tag_nearest`: `legacy-vla_opt_pi05_stage_a_ste_encoder_layer_prune-1-g5bd8d12`
-- `parent_repo`: `/workspace/laiminxin/vla-opt-openpi-old`
-- `parent_branch`: `legacy-vla_opt_pi05_stage_a_ste_encoder_layer_prune`
-- `parent_commit`: `19349f2`
-- `parent_tag_nearest`: `legacy-vla_opt_pi05_stage_a_ste_encoder_layer_prune`
+若需要跨方案对照入口，请看 [`docs/exp_record.md`](/workspace/laiminxin/vla-opt/third_party/openpi/docs/exp_record.md)。
 
-## Checkpoint
+## 方法定义
 
-- `ckpt_dir`: `/workspace/laiminxin/vla-opt/third_party/openpi/checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste/59999`
-- `policy_config`: `pi05_libero_spatial`
-- `ste_prune_k`: `64`
+- 剪枝位置：`SigLIP encoder` 中间层
+- 配置模式：`legacy_inside_encoder`
+- `gauss` 变体：仅在 `Top-K` 之前额外开启 score map 高斯平滑
 
-## Current Mainline Command
+## 统一 runtime 口径
 
-当前主线不再切 legacy worktree，直接用 pruning YAML。
+- `OPENPI_TORCH_COMPILE=1`
+- `OPENPI_TORCH_COMPILE_MODE=reduce-overhead`
+- 不显式设置 `TRITON_AUTOTUNE` / `TORCHINDUCTOR_MAX_AUTOTUNE`
+- 评测命令统一使用 `--suite libero_spatial --trials 50`
+
+## Canonical Matrix
+
+| variant | checkpoint | opt-config | keep_tokens_per_view | keep_ratio | gauss |
+| --- | --- | --- | ---: | ---: | --- |
+| `inside_t64` | `checkpoints/pi05_libero_spatial/inside_t64/59999` | `config/pruning/inside_t64.yaml` | 64 | 25% | off |
+| `inside_t64_gauss` | `checkpoints/pi05_libero_spatial/inside_t64/59999` | `config/pruning/inside_t64_gauss.yaml` | 64 | 25% | on |
+| `inside_t128` | `checkpoints/pi05_libero_spatial/inside_t128/59999` | `config/pruning/inside_t128.yaml` | 128 | 50% | off |
+| `inside_t128_gauss` | `checkpoints/pi05_libero_spatial/inside_t128/59999` | `config/pruning/inside_t128_gauss.yaml` | 128 | 50% | on |
+
+## Canonical Commands
+
+### `inside_t64`
 
 Server:
 
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
+OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
-  --run-tag vla_opt_legacy_inside \
-  --ckpt-dir checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste/59999 \
+  --run-tag inside_t64 \
+  --ckpt-dir checkpoints/pi05_libero_spatial/inside_t64/59999 \
   --policy-config pi05_libero_spatial \
-  --opt-config config/pruning/legacy_inside_encoder.yaml \
-  --port 8003
+  --opt-config config/pruning/inside_t64.yaml \
+  --port 8003 \
+  --gpu 0
 ```
 
 Client:
@@ -43,28 +53,27 @@ cd /workspace/laiminxin/vla-opt/third_party/openpi
 bash tools/eval_libero.sh \
   --host 127.0.0.1 \
   --port 8003 \
-  --trials 1 \
-  --run-tag vla_opt_legacy_inside
+  --suite libero_spatial \
+  --trials 50 \
+  --gpu 1 \
+  --run-tag inside_t64
 ```
 
-说明：
-
-- `legacy_inside_encoder.yaml` 选择旧的 inside-encoder 语义。
-- `59999` 是当前已验证可加载的 legacy checkpoint。
-
-## Case 1: GPU 1, step59999
+### `inside_t64_gauss`
 
 Server:
 
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
+OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
-  --ckpt-dir checkpoints/pi05_libero_spatial/vla_opt_pi05_stage_a_ste/59999 \
+  --run-tag inside_t64_gauss \
+  --ckpt-dir checkpoints/pi05_libero_spatial/inside_t64/59999 \
   --policy-config pi05_libero_spatial \
-  --opt-config config/pruning/legacy_inside_encoder.yaml \
-  --gpu 1 \
-  --port 8002
+  --opt-config config/pruning/inside_t64_gauss.yaml \
+  --port 8004 \
+  --gpu 0
 ```
 
 Client:
@@ -74,34 +83,76 @@ cd /workspace/laiminxin/vla-opt/third_party/openpi
 
 bash tools/eval_libero.sh \
   --host 127.0.0.1 \
-  --port 8002 \
+  --port 8004 \
+  --suite libero_spatial \
   --trials 50 \
   --gpu 1 \
-  --run-tag encoder_layer_prune_step59999 \
-  &> encoder_layer_prune_step59999.log
+  --run-tag inside_t64_gauss
 ```
 
-Outputs:
+### `inside_t128`
 
-- `client_log`: `third_party/openpi/encoder_layer_prune_step59999.log`
-- `video_out`: `third_party/openpi/runs/libero/videos/libero_spatial_<timestamp>`
+Server:
 
-## Success Rate Analysis
+```bash
+cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-- `total_success_rate`: `0.952`
-- `total_episodes`: `500`
-- `total_successes`: `476/500`
-- 共有 `10` 个任务，每个任务 `50` 个 trial。
+OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
+bash tools/serve_pi05_libero.sh \
+  --run-tag inside_t128 \
+  --ckpt-dir checkpoints/pi05_libero_spatial/inside_t128/59999 \
+  --policy-config pi05_libero_spatial \
+  --opt-config config/pruning/inside_t128.yaml \
+  --port 8005 \
+  --gpu 0
+```
 
-Per-task success rate:
+Client:
 
-- `49/50 = 0.980`: `pick up the black bowl between the plate and the ramekin and place it on the plate`
-- `49/50 = 0.980`: `pick up the black bowl next to the ramekin and place it on the plate`
-- `50/50 = 1.000`: `pick up the black bowl from table center and place it on the plate`
-- `50/50 = 1.000`: `pick up the black bowl on the cookie box and place it on the plate`
-- `48/50 = 0.960`: `pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate`
-- `46/50 = 0.920`: `pick up the black bowl on the ramekin and place it on the plate`
-- `46/50 = 0.920`: `pick up the black bowl next to the cookie box and place it on the plate`
-- `43/50 = 0.860`: `pick up the black bowl on the stove and place it on the plate`
-- `49/50 = 0.980`: `pick up the black bowl next to the plate and place it on the plate`
-- `46/50 = 0.920`: `pick up the black bowl on the wooden cabinet and place it on the plate`
+```bash
+cd /workspace/laiminxin/vla-opt/third_party/openpi
+
+bash tools/eval_libero.sh \
+  --host 127.0.0.1 \
+  --port 8005 \
+  --suite libero_spatial \
+  --trials 50 \
+  --gpu 1 \
+  --run-tag inside_t128
+```
+
+### `inside_t128_gauss`
+
+Server:
+
+```bash
+cd /workspace/laiminxin/vla-opt/third_party/openpi
+
+OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
+bash tools/serve_pi05_libero.sh \
+  --run-tag inside_t128_gauss \
+  --ckpt-dir checkpoints/pi05_libero_spatial/inside_t128/59999 \
+  --policy-config pi05_libero_spatial \
+  --opt-config config/pruning/inside_t128_gauss.yaml \
+  --port 8006 \
+  --gpu 0
+```
+
+Client:
+
+```bash
+cd /workspace/laiminxin/vla-opt/third_party/openpi
+
+bash tools/eval_libero.sh \
+  --host 127.0.0.1 \
+  --port 8006 \
+  --suite libero_spatial \
+  --trials 50 \
+  --gpu 1 \
+  --run-tag inside_t128_gauss
+```
+
+## Notes
+
+- 当前 canonical 配置为 `inside_t64*.yaml` 和 `inside_t128*.yaml`；方法模式仍然是 `legacy_inside_encoder`。
+- 本页不再把旧 worktree 路径、旧 run-tag 和历史成功率当作当前命令来源。

@@ -1,56 +1,48 @@
-# Pi0.5 Prune50 测试记录
+# 方案附录: pruning_after_encoder
 
-## Git Labels
+本页只维护 `pruning_after_encoder` 路径的当前可运行配置与命令，不再混合维护历史结果表。
 
-Parent repo (`/workspace/laiminxin/vla-opt`):
+若需要跨方案对照入口，请看 [`docs/exp_record.md`](/workspace/laiminxin/vla-opt/third_party/openpi/docs/exp_record.md)。
 
-- `branch`: `master`
-- `commit`: `8a4f35707d2c24df4354ab496fc5cb894cc082bf`
-- `tag_exact`: `none`
-- `tag_nearest`: ``
+## 方法定义
 
-OpenPI repo (`/workspace/laiminxin/vla-opt/third_party/openpi`):
+- 剪枝位置：完整 `SigLIP encoder` 之后
+- 配置模式：`post_encoder`
+- `gauss` 变体：仅在 `Top-K` 之前额外开启 score map 高斯平滑
 
-- `branch`: `vla-opt`
-- `commit`: `7f2e28ff7f34cc53e86e4cccbbe8fea48be7d7f3`
-- `tag_exact`: `none`
-- `tag_nearest`: ``
+## 统一 runtime 口径
 
-## Checkpoint
+- `OPENPI_TORCH_COMPILE=1`
+- `OPENPI_TORCH_COMPILE_MODE=reduce-overhead`
+- 不显式设置 `TRITON_AUTOTUNE` / `TORCHINDUCTOR_MAX_AUTOTUNE`
+- 评测命令统一使用 `--suite libero_spatial --trials 50`
 
-- `ckpt_dir`: `/workspace/laiminxin/vla-opt/third_party/openpi/checkpoints/pi05_libero_spatial/vla_opt_pi05_post_encoder_128token/60000`
-- `policy_config`: `pi05_libero_spatial`
-- `ste_prune_k`: `128`
+## Canonical Matrix
 
-## Experiment Config
+| variant | checkpoint | opt-config | keep_tokens_per_view | keep_ratio | gauss |
+| --- | --- | --- | ---: | ---: | --- |
+| `post_t64` | `checkpoints/pi05_libero_spatial/post_t64/29999` | `config/pruning/post_t64.yaml` | 64 | 25% | off |
+| `post_t64_gauss` | `checkpoints/pi05_libero_spatial/post_t64/29999` | `config/pruning/post_t64_gauss.yaml` | 64 | 25% | on |
+| `post_t128` | `checkpoints/pi05_libero_spatial/post_t128/59999` | `config/pruning/post_t128.yaml` | 128 | 50% | off |
+| `post_t128_gauss` | `checkpoints/pi05_libero_spatial/post_t128/59999` | `config/pruning/post_t128_gauss.yaml` | 128 | 50% | on |
 
-- `vision_tokens_per_view`: `256`
-- `keep_tokens_per_view`: `128`
-- `prune_ratio`: `50%`
-- `ve_film_num_blocks`: `4`
-- `ste_prune_point`: `post_encoder`
-- `ste_prune_stage@serve`: `gather`
-- `ste_prune_tau@serve`: `1.0`
-- `gauss(off)`: `disabled`
-- `gauss(on)`: `sigma=0.65`
-- `suite`: `libero_spatial`
-- `trials_per_task`: `50`
-- `tasks`: `10`
+## Canonical Commands
 
-## Case 1: GPU 3, no gauss, t50
+### `post_t64`
 
 Server:
 
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
+OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
-  --ckpt-dir checkpoints/pi05_libero_spatial/vla_opt_pi05_post_encoder_128token/60000 \
+  --run-tag post_t64 \
+  --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
   --policy-config pi05_libero_spatial \
-  --opt-config config/pruning/post_encoder.yaml \
-  --gpu 3 \
+  --opt-config config/pruning/post_t64.yaml \
   --port 8003 \
-  --run-tag prune50_keep128_nogauss_gpu3
+  --gpu 0
 ```
 
 Client:
@@ -63,51 +55,25 @@ bash tools/eval_libero.sh \
   --port 8003 \
   --suite libero_spatial \
   --trials 50 \
-  --gpu 3 \
-  --run-tag prune50_keep128_nogauss_gpu3 \
-  &> post_encoder_prune50_keep128_nogauss_t50.log
+  --gpu 1 \
+  --run-tag post_t64
 ```
 
-Outputs:
-
-- `client_log`: `third_party/openpi/post_encoder_prune50_keep128_nogauss_t50.log`
-- `video_out`: `third_party/openpi/runs/libero/videos/prune50_keep128_nogauss_gpu3/libero_spatial_20260316_164636`
-- `client_artifact_log`: `third_party/openpi/runs/libero/logs/prune50_keep128_nogauss_gpu3/libero_spatial_20260316_164636.log`
-
-## Success Rate Analysis
-
-- `total_success_rate`: `0.96`
-- `total_episodes`: `500`
-- `total_successes`: `480/500`
-- 共有 `10` 个任务，每个任务 `50` 个 trial。
-
-Per-task success rate:
-
-- `50/50 = 1.000`: `pick up the black bowl between the plate and the ramekin and place it on the plate`
-- `46/50 = 0.920`: `pick up the black bowl next to the ramekin and place it on the plate`
-- `50/50 = 1.000`: `pick up the black bowl from table center and place it on the plate`
-- `49/50 = 0.980`: `pick up the black bowl on the cookie box and place it on the plate`
-- `49/50 = 0.980`: `pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate`
-- `48/50 = 0.960`: `pick up the black bowl on the ramekin and place it on the plate`
-- `47/50 = 0.940`: `pick up the black bowl next to the cookie box and place it on the plate`
-- `46/50 = 0.920`: `pick up the black bowl on the stove and place it on the plate`
-- `48/50 = 0.960`: `pick up the black bowl next to the plate and place it on the plate`
-- `47/50 = 0.940`: `pick up the black bowl on the wooden cabinet and place it on the plate`
-
-## Case 2: GPU 4, gauss, t50
+### `post_t64_gauss`
 
 Server:
 
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
+OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
-  --ckpt-dir checkpoints/pi05_libero_spatial/vla_opt_pi05_post_encoder_128token/60000 \
+  --run-tag post_t64_gauss \
+  --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
   --policy-config pi05_libero_spatial \
-  --opt-config config/pruning/post_encoder_gauss.yaml \
-  --gpu 4 \
+  --opt-config config/pruning/post_t64_gauss.yaml \
   --port 8004 \
-  --run-tag prune50_keep128_gauss_gpu4
+  --gpu 0
 ```
 
 Client:
@@ -120,33 +86,73 @@ bash tools/eval_libero.sh \
   --port 8004 \
   --suite libero_spatial \
   --trials 50 \
-  --gpu 4 \
-  --run-tag prune50_keep128_gauss_gpu4 \
-  &> post_encoder_prune50_keep128_gauss_t50.log
+  --gpu 1 \
+  --run-tag post_t64_gauss
 ```
 
-Outputs:
+### `post_t128`
 
-- `client_log`: `third_party/openpi/post_encoder_prune50_keep128_gauss_t50.log`
-- `video_out`: `third_party/openpi/runs/libero/videos/prune50_keep128_gauss_gpu4/libero_spatial_20260316_164656`
-- `client_artifact_log`: `third_party/openpi/runs/libero/logs/prune50_keep128_gauss_gpu4/libero_spatial_20260316_164656.log`
+Server:
 
-## Success Rate Analysis
+```bash
+cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-- `total_success_rate`: `0.97`
-- `total_episodes`: `500`
-- `total_successes`: `485/500`
-- 共有 `10` 个任务，每个任务 `50` 个 trial。
+OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
+bash tools/serve_pi05_libero.sh \
+  --run-tag post_t128 \
+  --ckpt-dir checkpoints/pi05_libero_spatial/post_t128/59999 \
+  --policy-config pi05_libero_spatial \
+  --opt-config config/pruning/post_t128.yaml \
+  --port 8005 \
+  --gpu 0
+```
 
-Per-task success rate:
+Client:
 
-- `50/50 = 1.000`: `pick up the black bowl between the plate and the ramekin and place it on the plate`
-- `49/50 = 0.980`: `pick up the black bowl next to the ramekin and place it on the plate`
-- `50/50 = 1.000`: `pick up the black bowl from table center and place it on the plate`
-- `47/50 = 0.940`: `pick up the black bowl on the cookie box and place it on the plate`
-- `48/50 = 0.960`: `pick up the black bowl in the top drawer of the wooden cabinet and place it on the plate`
-- `47/50 = 0.940`: `pick up the black bowl on the ramekin and place it on the plate`
-- `49/50 = 0.980`: `pick up the black bowl next to the cookie box and place it on the plate`
-- `46/50 = 0.920`: `pick up the black bowl on the stove and place it on the plate`
-- `50/50 = 1.000`: `pick up the black bowl next to the plate and place it on the plate`
-- `49/50 = 0.980`: `pick up the black bowl on the wooden cabinet and place it on the plate`
+```bash
+cd /workspace/laiminxin/vla-opt/third_party/openpi
+
+bash tools/eval_libero.sh \
+  --host 127.0.0.1 \
+  --port 8005 \
+  --suite libero_spatial \
+  --trials 50 \
+  --gpu 1 \
+  --run-tag post_t128
+```
+
+### `post_t128_gauss`
+
+Server:
+
+```bash
+cd /workspace/laiminxin/vla-opt/third_party/openpi
+
+OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
+bash tools/serve_pi05_libero.sh \
+  --run-tag post_t128_gauss \
+  --ckpt-dir checkpoints/pi05_libero_spatial/post_t128/59999 \
+  --policy-config pi05_libero_spatial \
+  --opt-config config/pruning/post_t128_gauss.yaml \
+  --port 8006 \
+  --gpu 0
+```
+
+Client:
+
+```bash
+cd /workspace/laiminxin/vla-opt/third_party/openpi
+
+bash tools/eval_libero.sh \
+  --host 127.0.0.1 \
+  --port 8006 \
+  --suite libero_spatial \
+  --trials 50 \
+  --gpu 1 \
+  --run-tag post_t128_gauss
+```
+
+## Notes
+
+- 当前 canonical 配置为 `post_t64*.yaml` 和 `post_t128*.yaml`。
+- 本页不再把旧 checkpoint 命名、旧 GPU 示例和历史成功率当作当前命令来源。

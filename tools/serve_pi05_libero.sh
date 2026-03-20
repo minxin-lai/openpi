@@ -7,6 +7,14 @@ vla_opt_repo_dir="$(cd "${script_dir}/../../.." && pwd)"
 
 die() { echo "Error: $*" >&2; exit 2; }
 
+extract_ckpt_step() {
+  local ckpt_path="$1"
+  local step_label=""
+  step_label="$(basename "${ckpt_path}")"
+  [[ "${step_label}" =~ ^[0-9]+$ ]] || die "Checkpoint dir must end with numeric step, got: ${ckpt_path}"
+  printf '%s\n' "${step_label}"
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -58,6 +66,7 @@ cd "${repo_dir}"
 
 [[ -f "${ckpt_dir}/model.safetensors" ]] || die "Missing ${ckpt_dir}/model.safetensors"
 command -v uv >/dev/null 2>&1 || die "Missing 'uv' in PATH"
+step_label="$(extract_ckpt_step "${ckpt_dir}")"
 
 norm_stats_path="/workspace/laiminxin/datasets/lerobot_datasets/libero_spatial/norm_stats.json"
 if [[ "${policy_config}" == "pi05_libero_spatial" && ! -f "${norm_stats_path}" ]]; then
@@ -96,9 +105,9 @@ if [[ -n "${observe_config}" ]]; then
   if [[ -n "${observe_output_dir}" ]]; then
     observe_dump_dir="${observe_output_dir}"
   elif [[ -n "${run_tag}" ]]; then
-    observe_dump_dir="${repo_dir}/runs/observe/${run_tag}_${ts}"
+    observe_dump_dir="${repo_dir}/runs/${run_tag}/observe_${step_label}_${ts}"
   else
-    observe_dump_dir="${repo_dir}/runs/observe/openpi_pi05_libero_${ts}"
+    observe_dump_dir="${repo_dir}/runs/openpi_pi05_libero/observe_${step_label}_${ts}"
   fi
   mkdir -p "${observe_dump_dir}"
   observe_runtime_config="${observe_dump_dir}/observe_config.json"
@@ -131,6 +140,7 @@ echo "policy_config: ${policy_config}"
 echo "gpu: ${gpu}"
 echo "port: ${port}"
 echo "run_tag: ${run_tag:-<unset>}"
+echo "step_label: ${step_label}"
 echo "log: ${log_path}"
 echo "opt_config: ${opt_config:-<off>}"
 echo "observe_config: ${observe_config:-<off>}"
@@ -155,17 +165,8 @@ if [[ -z "${opt_config}" ]]; then
   export OPENPI_TORCH_COMPILE_MODE="${OPENPI_TORCH_COMPILE_MODE:-reduce-overhead}"
 fi
 
-set +e
-CUDA_VISIBLE_DEVICES="${gpu}" uv run scripts/serve_policy.py \
+exec > >(tee "${log_path}") 2>&1
+exec env CUDA_VISIBLE_DEVICES="${gpu}" uv run scripts/serve_policy.py \
   --env LIBERO --port "${port}" \
   "${extra_args[@]}" \
-  policy:checkpoint --policy.config "${policy_config}" --policy.dir "${ckpt_dir}" 2>&1 | tee "${log_path}"
-status=$?
-set -e
-
-echo
-echo "server_log: ${log_path}"
-if [[ -n "${observe_dump_dir}" ]]; then
-  echo "observe_dump_dir: ${observe_dump_dir}"
-fi
-exit "${status}"
+  policy:checkpoint --policy.config "${policy_config}" --policy.dir "${ckpt_dir}"

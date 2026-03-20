@@ -48,12 +48,14 @@ def main() -> int:
     args = parse_args()
     run_dir = Path(args.run_dir)
     output_dir = Path(args.output_dir) if args.output_dir else run_dir / "video_dumps"
+    run_label = build_run_label(run_dir)
     overlay_kinds = ["scores_overlay", "keep_mask_overlay"] if args.overlay_kind == "both" else [args.overlay_kind]
 
     records = load_records(run_dir, overlay_kinds)
     outputs = render_videos(
         records,
         output_dir=output_dir,
+        run_label=run_label,
         fps=int(args.fps),
         view_a=int(args.view_a),
         view_b=int(args.view_b),
@@ -116,6 +118,7 @@ def render_videos(
     records: list[FrameRecord],
     *,
     output_dir: Path,
+    run_label: str,
     fps: int,
     view_a: int,
     view_b: int,
@@ -145,7 +148,7 @@ def render_videos(
 
         task_dir = output_dir / overlay_kind / f"task_{task_id:02d}_{task_slug}"
         task_dir.mkdir(parents=True, exist_ok=True)
-        output_path = task_dir / f"episode_{episode_idx:03d}_view{view_a}_view{view_b}.mp4"
+        output_path = task_dir / f"{run_label}_episode_{episode_idx:03d}_view{view_a}_view{view_b}.mp4"
         with imageio.get_writer(output_path, fps=fps) as writer:
             for frame in frames:
                 writer.append_data(frame)
@@ -181,6 +184,19 @@ def build_frame(
     canvas.paste(left, (0, title_h))
     canvas.paste(right, (left.width + gap, title_h))
     return np.asarray(pad_to_macro_block(canvas, block_size=16))
+
+
+def build_run_label(run_dir: Path) -> str:
+    parent_name = run_dir.parent.name
+    run_name = run_dir.name
+    variants_with_prefix = ("viz_", "observe_")
+
+    if parent_name == "runs":
+        return run_name
+    if run_name.startswith(variants_with_prefix):
+        suffix = run_name.split("_", 1)[1]
+        return f"{parent_name}_{suffix}"
+    return f"{parent_name}_{run_name}"
 
 
 def resize_to_height(image: Image.Image, target_h: int) -> Image.Image:

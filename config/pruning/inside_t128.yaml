@@ -1,0 +1,14 @@
+mode: legacy_inside_encoder
+num_blocks: 4
+k: 128
+train_stage: auto
+serve_stage: gather
+train_tau: 2.0
+serve_tau: 1.0
+prune_layer: null
+score_num_layers: 1
+score_mlp_hidden_dim: null
+gaussian:
+  enabled: false
+  sigma: 0.65
+  kernel_size: null

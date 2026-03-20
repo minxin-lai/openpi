@@ -17,6 +17,13 @@ from vla_opt.observe.openpi import emit_openpi_pruning_summary
 logger = logging.getLogger(__name__)
 
 
+def _resolve_pruning_observe_phase(ste_handle: Any) -> str:
+    point = str(getattr(ste_handle, "point", "")).strip().lower()
+    if point == "encoder_layer":
+        return "inside_encoder"
+    return "post_encoder"
+
+
 def get_safe_dtype(target_dtype, device_type):
     """Get a safe dtype for the given device type."""
     if device_type == "cpu":
@@ -254,12 +261,13 @@ class PI0Pytorch(nn.Module):
             observer = getattr(self, "_vla_opt_observer", None)
             if observer is not None:
                 tensors = None
+                phase = _resolve_pruning_observe_phase(ste_handle)
                 try:
-                        tensors = build_openpi_vision_pruning_tensors(
-                            model=self,
-                            input_tokens=n_before,
-                            scores=last_scores,
-                            smoothed_scores=last_select_scores,
+                    tensors = build_openpi_vision_pruning_tensors(
+                        model=self,
+                        input_tokens=n_before,
+                        scores=last_scores,
+                        smoothed_scores=last_select_scores,
                         keep_indices=last_idx,
                         keep_mask=last_hard_mask,
                         image=img,
@@ -268,7 +276,7 @@ class PI0Pytorch(nn.Module):
                     tensors = None
                 emit_openpi_pruning_summary(
                     observer,
-                    phase="post_encoder",
+                    phase=phase,
                     view_index=int(view_idx),
                     input_tokens=n_before,
                     output_tokens=int(num_img_embs),

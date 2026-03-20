@@ -1,0 +1,14 @@
+mode: post_encoder
+num_blocks: 4
+k: 64
+train_stage: auto
+serve_stage: gather
+train_tau: 2.0
+serve_tau: 1.0
+prune_layer: null
+score_num_layers: 3
+score_mlp_hidden_dim: null
+gaussian:
+  enabled: true
+  sigma: 0.65
+  kernel_size: null

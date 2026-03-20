@@ -21,7 +21,7 @@ from openpi.training import config as _config
 # Usage
 #
 #   uv run scripts/serve_policy.py --env LIBERO --port 8003 \
-#     --vla-opt-pruning-config config/pruning/post_encoder.yaml \
+#     --vla-opt-pruning-config config/pruning/post_t128.yaml \
 #     --vla-opt-observe-config configs/observe/infer_light.json \
 #     policy:checkpoint --policy.config pi05_libero_spatial --policy.dir <CKPT_DIR>
 

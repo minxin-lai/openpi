@@ -2,10 +2,12 @@
 
 本文档用于解释当前 OpenPI 代码路径中两种视觉 token 剪枝方法的差别，适合直接作为画示意图或写汇报说明的依据。
 
+实验结果与最新汇总结论统一维护在 [`docs/exp_record.md`](/workspace/laiminxin/vla-opt/third_party/openpi/docs/exp_record.md)，本文档只说明方法差异，不重复维护结果表。
+
 对比对象：
 
-- 旧方法：`encoder_layer prune`
-- 新方法：`post_encoder prune`
+- 旧方法：`pruning_inside_encoder`
+- 新方法：`pruning_after_encoder`
 
 ## 1. 一句话总结
 
@@ -67,7 +69,7 @@
 
 ## 3. 简单流程图
 
-### 3.1 旧方法：Encoder-Layer Prune
+### 3.1 旧方法：pruning_inside_encoder
 
 ```text
 图像
@@ -91,7 +93,7 @@ PaliGemma / Action Head
 
 你在图里可以把“某一层 Encoder 内”这个框标成红色，突出它是“中途剪枝”。
 
-### 3.2 新方法：Post-Encoder Prune
+### 3.2 新方法：pruning_after_encoder
 
 ```text
 图像
@@ -129,33 +131,26 @@ Image → Tokens(N) → SigLIP全层 → [末端剪枝]   → Tokens(K) → LLM
 
 这个版本最适合 PPT。
 
-## 5. 讲解时可以直接说的话
+## 5. 对外说明的最短版本
 
-可直接用于口头解释：
-
-> 旧方法是在视觉编码器内部提前剪枝，所以后续视觉层本身也会省计算。
-> 新方法是在完整视觉编码之后再剪枝，因此视觉 backbone 更稳定，分数也能来自多层聚合，但减少的主要是 encoder 之后的 token 开销。
-
-再简化一点可以说：
-
-- 旧方法：早剪枝
-- 新方法：晚剪枝
+- 旧方法：早剪枝，后续视觉层和多模态部分都能受益
+- 新方法：晚剪枝，视觉 backbone 更稳定，主要减少 encoder 之后的 token 开销
 
 ## 6. 当前代码中的对应关系
 
 旧方法对应：
 
-- 旧工作树 / 旧目录中的 `encoder_layer prune`
-- 典型 checkpoint 描述为 legacy `stage_a_ste`
+- 当前汇总表中的方案名：`pruning_inside_encoder`
+- 当前 canonical 配置：`inside_t64*.yaml` 与 `inside_t128*.yaml`
 
 新方法对应：
 
-- 当前主目录里的默认路径
-- 默认 checkpoint 为 `vla_opt_pi05_stage_a_ste_post_encoder_prune`
+- 当前汇总表中的方案名：`pruning_after_encoder`
+- 当前 canonical 配置：`post_t64*.yaml` 与 `post_t128*.yaml`
 
-## 7. 新方法额外的高斯变体
+## 7. 高斯 score 后处理变体
 
-当前新方法还有一个 `gauss` 变体：
+当前两种方法都可以叠加一个 `gauss` 变体：
 
 - 在 Top-K 之前，先对 score map 做高斯平滑。
 - 这样选出的 patch 区域通常更连续，更像“成片保留”而不是零散点状保留。
@@ -169,21 +164,14 @@ raw scores → Gaussian smoothing → Top-K → gather
 如果你这次只画“两种方法”的主对比，通常不必把高斯分支画进主图。
 比较好的做法是单独在角落补一个小注释：
 
-- `gauss` 是 `post_encoder prune` 的一个 score 后处理变体。
+- `gauss` 是剪枝前的 score 后处理变体，可用于 `pruning_inside_encoder` 或 `pruning_after_encoder`。
 
 ## 8. 推荐图注
 
-图注可直接使用下面任意一版。
+- 简版：旧方法在视觉编码器内部执行剪枝，新方法在视觉编码器输出后统一执行剪枝。
+- 稍完整版：旧方法属于 encoder-layer pruning，在 SigLIP 中途将 token 从 `N` 压缩到 `K`；新方法属于 post-encoder pruning，先完成视觉编码，再基于多层聚合分数统一剪枝。
 
-简版：
-
-> 旧方法在视觉编码器内部执行剪枝，新方法在视觉编码器输出后统一执行剪枝。
-
-稍完整版：
-
-> 旧方法属于 encoder-layer pruning，在 SigLIP 中途将 token 从 N 压缩到 K；新方法属于 post-encoder pruning，先完成视觉编码，再基于多层聚合分数统一剪枝。
-
-## 9. 推荐你最终画图时保留的三个标签
+## 9. 画图时建议保留的三个标签
 
 无论你用什么画图软件，建议至少保留这三个标签：
 
@@ -197,4 +185,3 @@ raw scores → Gaussian smoothing → Top-K → gather
 - 新方法：`Prune Position = after encoder`
 - 旧方法：`shorter sequence benefits later vision layers + LLM`
 - 新方法：`shorter sequence mainly benefits post-encoder multimodal part`
-
