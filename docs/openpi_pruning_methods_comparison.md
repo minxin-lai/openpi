@@ -6,36 +6,36 @@
 
 对比对象：
 
-- 旧方法：`pruning_inside_encoder`
-- 新方法：`pruning_after_encoder`
+- encoder 内剪枝：`pruning_inside_encoder`
+- encoder 后剪枝：`pruning_after_encoder`
 
 ## 1. 一句话总结
 
-- 旧方法是在 `SigLIP encoder 中间层` 直接剪枝，后续视觉层继续处理缩短后的 token 序列。
-- 新方法是在 `完整 SigLIP encoder 之后` 再统一剪枝，视觉编码器本体先完整提特征，后续多模态部分再吃缩短后的 token 序列。
+- `pruning_inside_encoder` 是在 `SigLIP encoder 中间层` 直接剪枝，后续视觉层继续处理缩短后的 token 序列。
+- `pruning_after_encoder` 是在 `完整 SigLIP encoder 之后` 再统一剪枝，视觉编码器本体先完整提特征，后续多模态部分再吃缩短后的 token 序列。
 
 ## 2. 最核心差别
 
 ### 2.1 剪枝位置不同
 
-旧方法：
+encoder 内剪枝：
 
 - 剪枝发生在某个 SigLIP encoder layer 内部。
 - 当前层输出后，立刻计算 score、执行 Top-K、再做 gather。
 
-新方法：
+encoder 后剪枝：
 
 - 剪枝发生在 vision encoder 的末端，也就是 `post_encoder`。
 - 完整 encoder 跑完后，先汇总最后几层的分数，再统一做 Top-K 和 gather。
 
 ### 2.2 后续计算路径不同
 
-旧方法：
+encoder 内剪枝：
 
 - 一旦剪枝完成，后面的 SigLIP layer 就只处理 `K` 个 token。
-- 属于“早剪枝”，更像直接改视觉 backbone 的计算图。
+- 属于 encoder 内部剪枝，更像直接改视觉 backbone 的计算图。
 
-新方法：
+encoder 后剪枝：
 
 - SigLIP encoder 全程仍处理原始 `N` 个 token。
 - 真正缩短的是 encoder 输出后的视觉 token 序列。
@@ -43,11 +43,11 @@
 
 ### 2.3 分数来源不同
 
-旧方法：
+encoder 内剪枝：
 
 - 分数来自单个剪枝层的当前特征。
 
-新方法：
+encoder 后剪枝：
 
 - 分数来自最后若干个 FiLM 层的 score。
 - 这些 score 会先做平均，再执行 Top-K。
@@ -55,13 +55,13 @@
 
 ### 2.4 可解释性和工程形态不同
 
-旧方法：
+encoder 内剪枝：
 
 - 结构更直接。
 - 剪枝侵入 encoder 内部。
 - 更强调“尽早减少视觉层后续计算量”。
 
-新方法：
+encoder 后剪枝：
 
 - 结构更模块化。
 - 更容易在 encoder 输出处统一观测和 dump。
@@ -69,7 +69,7 @@
 
 ## 3. 简单流程图
 
-### 3.1 旧方法：pruning_inside_encoder
+### 3.1 encoder 内剪枝：pruning_inside_encoder
 
 ```text
 图像
@@ -93,7 +93,7 @@ PaliGemma / Action Head
 
 你在图里可以把“某一层 Encoder 内”这个框标成红色，突出它是“中途剪枝”。
 
-### 3.2 新方法：pruning_after_encoder
+### 3.2 encoder 后剪枝：pruning_after_encoder
 
 ```text
 图像
@@ -122,10 +122,10 @@ PaliGemma / Action Head
 ```text
                 OpenPI 两种剪枝方法对比
 
-旧方法
+encoder 内剪枝
 Image → Tokens(N) → SigLIP前层 → [中间层剪枝] → Tokens(K) → SigLIP后层 → LLM
 
-新方法
+encoder 后剪枝
 Image → Tokens(N) → SigLIP全层 → [末端剪枝]   → Tokens(K) → LLM
 ```
 
@@ -133,17 +133,17 @@ Image → Tokens(N) → SigLIP全层 → [末端剪枝]   → Tokens(K) → LLM
 
 ## 5. 对外说明的最短版本
 
-- 旧方法：早剪枝，后续视觉层和多模态部分都能受益
-- 新方法：晚剪枝，视觉 backbone 更稳定，主要减少 encoder 之后的 token 开销
+- encoder 内剪枝：早剪枝，后续视觉层和多模态部分都能受益
+- encoder 后剪枝：晚剪枝，视觉 backbone 更稳定，主要减少 encoder 之后的 token 开销
 
 ## 6. 当前代码中的对应关系
 
-旧方法对应：
+`pruning_inside_encoder` 对应：
 
 - 当前汇总表中的方案名：`pruning_inside_encoder`
 - 当前 canonical 配置：`inside_t64*.yaml` 与 `inside_t128*.yaml`
 
-新方法对应：
+`pruning_after_encoder` 对应：
 
 - 当前汇总表中的方案名：`pruning_after_encoder`
 - 当前 canonical 配置：`post_t64*.yaml` 与 `post_t128*.yaml`
@@ -168,8 +168,8 @@ raw scores → Gaussian smoothing → Top-K → gather
 
 ## 8. 推荐图注
 
-- 简版：旧方法在视觉编码器内部执行剪枝，新方法在视觉编码器输出后统一执行剪枝。
-- 稍完整版：旧方法属于 encoder-layer pruning，在 SigLIP 中途将 token 从 `N` 压缩到 `K`；新方法属于 post-encoder pruning，先完成视觉编码，再基于多层聚合分数统一剪枝。
+- 简版：`pruning_inside_encoder` 在视觉编码器内部执行剪枝，`pruning_after_encoder` 在视觉编码器输出后统一执行剪枝。
+- 稍完整版：`pruning_inside_encoder` 属于 encoder-layer pruning，在 SigLIP 中途将 token 从 `N` 压缩到 `K`；`pruning_after_encoder` 属于 post-encoder pruning，先完成视觉编码，再基于多层聚合分数统一剪枝。
 
 ## 9. 画图时建议保留的三个标签
 
@@ -181,7 +181,7 @@ raw scores → Gaussian smoothing → Top-K → gather
 
 对应说明：
 
-- 旧方法：`Prune Position = inside encoder`
-- 新方法：`Prune Position = after encoder`
-- 旧方法：`shorter sequence benefits later vision layers + LLM`
-- 新方法：`shorter sequence mainly benefits post-encoder multimodal part`
+- encoder 内剪枝：`Prune Position = inside encoder`
+- encoder 后剪枝：`Prune Position = after encoder`
+- encoder 内剪枝：`shorter sequence benefits later vision layers + LLM`
+- encoder 后剪枝：`shorter sequence mainly benefits post-encoder multimodal part`
