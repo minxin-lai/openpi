@@ -258,10 +258,10 @@ class BaseModelConfig(abc.ABC):
         if pruning_config_path or os.environ.get("VLA_OPT_OBSERVE_CONFIG", "").strip():
             try:
                 from vla_opt.integrations.openpi_pi05 import (
-                    enable_openpi_pruning_from_config,
+                    enable_pi05_pruning_from_runtime_config,
                 )
                 from vla_opt.observe.openpi import build_openpi_observer_from_env
-                from vla_opt.pruning.openpi_config import load_openpi_pruning_config
+                from vla_opt.pruning import load_pruning_config
             except Exception as e:  # pragma: no cover
                 raise RuntimeError(
                     "VLA-OPT wrappers requested via env vars, but `vla_opt` cannot be imported. "
@@ -270,10 +270,10 @@ class BaseModelConfig(abc.ABC):
                 ) from e
 
             if pruning_config_path:
-                runtime_cfg = load_openpi_pruning_config(pruning_config_path)
-                resolved_cfg = runtime_cfg.resolve_for_serve()
-                enable_openpi_pruning_from_config(model, resolved_cfg)
-                logger.info("VLA-OPT pruning enabled (serve): config=%s mode=%s", pruning_config_path, runtime_cfg.mode)
+                pruning_cfg = load_pruning_config(pruning_config_path)
+                runtime_cfg = pruning_cfg.to_runtime("serve")
+                enable_pi05_pruning_from_runtime_config(model, runtime_cfg)
+                logger.info("VLA-OPT pruning enabled (serve): config=%s mode=%s", pruning_config_path, pruning_cfg.mode)
 
             observer = build_openpi_observer_from_env()
             if observer is not None:

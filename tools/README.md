@@ -25,7 +25,6 @@
 ### 1. Baseline server + eval
 
 ```bash
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
   --ckpt-dir checkpoints/pi05_libero_spatial/pi05_baseline/29999 \
   --policy-config pi05_libero_spatial \
@@ -47,7 +46,6 @@ bash tools/eval_libero.sh \
 ### 2. Experiment server + eval
 
 ```bash
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
   --policy-config pi05_libero_spatial \
@@ -70,7 +68,6 @@ bash tools/eval_libero.sh \
 ### 3. Single run without dump
 
 ```bash
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero.sh \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
   --policy-config pi05_libero_spatial \
@@ -84,7 +81,6 @@ bash tools/run_libero.sh \
 ### 4. Single dump run
 
 ```bash
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero_dump.sh \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
   --policy-config pi05_libero_spatial \
@@ -209,9 +205,8 @@ Default output naming when `--ckpt-dir` ends with a numeric step:
 ## Notes
 
 - Recommended runtime profile for documented eval commands:
-  - `OPENPI_TORCH_COMPILE=1`
-  - `OPENPI_TORCH_COMPILE_MODE=reduce-overhead`
-  - leave `TRITON_AUTOTUNE` / `TORCHINDUCTOR_MAX_AUTOTUNE` unset
+  - rely on the default `torch.compile(...)` behavior
+  - set `OPENPI_TORCH_COMPILE=0` to fully disable compile
 - `--policy-config` selects the base policy/task config.
 - `--opt-config` selects optional experiment behavior on top of the base policy.
 - `run_libero.sh` is the recommended one-click path for full eval without dump rendering.

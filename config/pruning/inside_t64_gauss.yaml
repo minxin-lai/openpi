@@ -1,4 +1,4 @@
-mode: legacy_inside_encoder
+mode: inside_encoder
 num_blocks: 4
 k: 64
 train_stage: auto

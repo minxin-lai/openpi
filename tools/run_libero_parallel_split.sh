@@ -6,8 +6,39 @@ repo_dir="$(cd "${script_dir}/.." && pwd)"
 
 cd "${repo_dir}"
 
-export OPENPI_TORCH_COMPILE="${OPENPI_TORCH_COMPILE:-1}"
-export OPENPI_TORCH_COMPILE_MODE="${OPENPI_TORCH_COMPILE_MODE:-reduce-overhead}"
+usage() {
+  cat <<'EOF'
+Usage: bash tools/run_libero_parallel_split.sh [--gpu <id[,id...]>]
+
+Options:
+  --gpu <id[,id...]>   Comma-separated GPU list. Default: 1,2,3,4
+  -h, --help           Show this help message
+EOF
+}
+
+gpu_arg="1,2,3,4"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --gpu) gpu_arg="${2:?}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+IFS=',' read -r -a gpu_ids <<< "${gpu_arg}"
+
+if [[ ${#gpu_ids[@]} -eq 0 ]]; then
+  echo "No GPUs provided via --gpu" >&2
+  exit 1
+fi
+
+for gpu in "${gpu_ids[@]}"; do
+  if [[ -z "${gpu}" ]]; then
+    echo "Invalid --gpu value: ${gpu_arg}" >&2
+    exit 1
+  fi
+done
 
 run_eval() {
   local gpu="$1"
@@ -28,74 +59,51 @@ run_eval() {
     --trials 50
 }
 
-run_gpu4_queue() {
-  run_eval 4 \
-    inside_t64 \
-    checkpoints/pi05_libero_spatial/inside_t64/59999 \
-    config/pruning/inside_t64.yaml \
-    9001
+run_specs=(
+  "inside_t64|checkpoints/pi05_libero_spatial/inside_t64/59999|config/pruning/inside_t64.yaml"
+  "inside_t64_gauss|checkpoints/pi05_libero_spatial/inside_t64/59999|config/pruning/inside_t64_gauss.yaml"
+  "inside_t128|checkpoints/pi05_libero_spatial/inside_t128/59999|config/pruning/inside_t128.yaml"
+  "inside_t128_gauss|checkpoints/pi05_libero_spatial/inside_t128/59999|config/pruning/inside_t128_gauss.yaml"
+  "post_t64|checkpoints/pi05_libero_spatial/post_t64/29999|config/pruning/post_t64.yaml"
+  "post_t128|checkpoints/pi05_libero_spatial/post_t128/59999|config/pruning/post_t128.yaml"
+  "post_t64_gauss|checkpoints/pi05_libero_spatial/post_t64/29999|config/pruning/post_t64_gauss.yaml"
+  "post_t128_gauss|checkpoints/pi05_libero_spatial/post_t128/59999|config/pruning/post_t128_gauss.yaml"
+)
 
-  run_eval 4 \
-    inside_t64_gauss \
-    checkpoints/pi05_libero_spatial/inside_t64/59999 \
-    config/pruning/inside_t64_gauss.yaml \
-    9002
+queue_size=${#gpu_ids[@]}
 
-  run_eval 4 \
-    inside_t128 \
-    checkpoints/pi05_libero_spatial/inside_t128/59999 \
-    config/pruning/inside_t128.yaml \
-    9003
+run_gpu_queue() {
+  local worker_idx="$1"
+  local gpu="$2"
+  local spec_idx
 
-  run_eval 4 \
-    inside_t128_gauss \
-    checkpoints/pi05_libero_spatial/inside_t128/59999 \
-    config/pruning/inside_t128_gauss.yaml \
-    9004
+  for ((spec_idx=worker_idx; spec_idx<${#run_specs[@]}; spec_idx+=queue_size)); do
+    IFS='|' read -r run_tag ckpt_dir opt_config <<< "${run_specs[spec_idx]}"
+    run_eval "${gpu}" "${run_tag}" "${ckpt_dir}" "${opt_config}" "$((9001 + spec_idx))"
+  done
 }
 
-run_gpu6_queue() {
-  run_eval 6 \
-    post_t64 \
-    checkpoints/pi05_libero_spatial/post_t64/29999 \
-    config/pruning/post_t64.yaml \
-    9005
+pids=()
+statuses=()
 
-  run_eval 6 \
-    post_t128 \
-    checkpoints/pi05_libero_spatial/post_t128/59999 \
-    config/pruning/post_t128.yaml \
-    9006
+for idx in "${!gpu_ids[@]}"; do
+  run_gpu_queue "${idx}" "${gpu_ids[idx]}" &
+  pids[idx]=$!
+done
 
-  run_eval 6 \
-    post_t64_gauss \
-    checkpoints/pi05_libero_spatial/post_t64/29999 \
-    config/pruning/post_t64_gauss.yaml \
-    9007
-
-  run_eval 6 \
-    post_t128_gauss \
-    checkpoints/pi05_libero_spatial/post_t128/59999 \
-    config/pruning/post_t128_gauss.yaml \
-    9008
-}
-
-run_gpu4_queue &
-pid_gpu4=$!
-
-run_gpu6_queue &
-pid_gpu6=$!
-
-status_gpu4=0
-status_gpu6=0
-
-wait "${pid_gpu4}" || status_gpu4=$?
-wait "${pid_gpu6}" || status_gpu6=$?
+for idx in "${!pids[@]}"; do
+  status=0
+  wait "${pids[idx]}" || status=$?
+  statuses[idx]=$status
+done
 
 echo
-echo "GPU 4 queue exit status: ${status_gpu4}"
-echo "GPU 6 queue exit status: ${status_gpu6}"
+for idx in "${!gpu_ids[@]}"; do
+  echo "GPU ${gpu_ids[idx]} queue exit status: ${statuses[idx]}"
+done
 
-if [[ "${status_gpu4}" -ne 0 || "${status_gpu6}" -ne 0 ]]; then
-  exit 1
-fi
+for status in "${statuses[@]}"; do
+  if [[ "${status}" -ne 0 ]]; then
+    exit 1
+  fi
+done

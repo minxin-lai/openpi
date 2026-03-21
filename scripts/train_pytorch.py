@@ -456,8 +456,8 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
     ve_film_handle = None
     ve_pruning_handle = None
     pruning_losses = None
-    pruning_runtime_cfg = None
-    resolved_pruning_cfg = None
+    pruning_cfg = None
+    runtime_pruning_cfg = None
 
     need_vla_opt = extra.vla_opt_pruning_config is not None
     if need_vla_opt:
@@ -470,16 +470,14 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
             sys.path.insert(0, str(vla_src))
 
         from vla_opt.integrations.openpi_pi05 import (
-            enable_openpi_pruning_from_config,
+            enable_pi05_pruning_from_runtime_config,
         )
-        from vla_opt.pruning.openpi_config import load_openpi_pruning_config
+        from vla_opt.pruning import load_pruning_config
         from modules.ste_pruning import pruning_losses as _pruning_losses
 
-        pruning_runtime_cfg = load_openpi_pruning_config(extra.vla_opt_pruning_config)
-        resolved_pruning_cfg = pruning_runtime_cfg.resolve_for_train()
-        handles = enable_openpi_pruning_from_config(model, resolved_pruning_cfg)
-        ve_film_handle = handles.film_handle
-        ve_pruning_handle = handles.pruning_handle
+        pruning_cfg = load_pruning_config(extra.vla_opt_pruning_config)
+        runtime_pruning_cfg = pruning_cfg.to_runtime("train")
+        ve_film_handle, ve_pruning_handle = enable_pi05_pruning_from_runtime_config(model, runtime_pruning_cfg)
         pruning_losses = _pruning_losses
 
         if ve_film_handle is not None:
@@ -487,7 +485,7 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
             film_params = sum(int(p.numel()) for p in ve_film_handle.trainable_parameters())
             logging.info(
                 "VLA-OPT VE-FiLM enabled: num_film_blocks=%s (actual_wrapped=%s) film_params=%s",
-                resolved_pruning_cfg.num_blocks,
+                runtime_pruning_cfg.num_blocks,
                 actual,
                 film_params,
             )
@@ -495,11 +493,11 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
             prune_params = sum(int(p.numel()) for p in ve_pruning_handle.trainable_parameters())
             logging.info(
                 "VLA-OPT pruning enabled: mode=%s k=%s train_stage=%s serve_stage=%s score_num_layers=%s prune_params=%s",
-                pruning_runtime_cfg.mode,
-                resolved_pruning_cfg.k,
-                resolved_pruning_cfg.train_stage,
-                resolved_pruning_cfg.serve_stage,
-                resolved_pruning_cfg.score_num_layers,
+                pruning_cfg.mode,
+                runtime_pruning_cfg.k,
+                runtime_pruning_cfg.train_stage,
+                runtime_pruning_cfg.serve_stage,
+                runtime_pruning_cfg.score_num_layers,
                 prune_params,
             )
 
@@ -540,7 +538,7 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
     end_lr = config.lr_schedule.decay_lr
 
     # Create optimizer with config parameters
-    freeze_base = bool(resolved_pruning_cfg.freeze_base) if resolved_pruning_cfg is not None else False
+    freeze_base = bool(runtime_pruning_cfg.freeze_base) if runtime_pruning_cfg is not None else False
     if freeze_base:
         for p in model.parameters():
             p.requires_grad = False
@@ -648,21 +646,22 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                 if ve_film_handle is not None:
                     ve_film_handle.set_condition(text_tokens, cond_mask=lang_mask)
                 if ve_pruning_handle is not None:
-                    stage_cfg = str(resolved_pruning_cfg.train_stage if resolved_pruning_cfg is not None else "mask").strip().lower()
+                    stage_cfg = str(runtime_pruning_cfg.train_stage if runtime_pruning_cfg is not None else "mask").strip().lower()
                     if stage_cfg in {"1", "stage1"}:
                         stage_cfg = "mask"
                     if stage_cfg in {"2", "stage2"}:
                         stage_cfg = "gather"
                     if stage_cfg == "auto":
-                        switch_step = int(resolved_pruning_cfg.switch_step) if resolved_pruning_cfg is not None else -1
+                        _raw_ss = runtime_pruning_cfg.switch_step if runtime_pruning_cfg is not None else None
+                        switch_step = int(_raw_ss) if _raw_ss is not None else -1
                         if switch_step < 0:
                             switch_step = int(config.num_train_steps) // 2
                         ste_stage = "mask" if int(global_step) < int(switch_step) else "gather"
                     else:
                         ste_stage = stage_cfg
 
-                    tau0 = float(resolved_pruning_cfg.train_tau) if resolved_pruning_cfg is not None else 1.0
-                    tau1 = float(resolved_pruning_cfg.train_tau_final) if resolved_pruning_cfg is not None else tau0
+                    tau0 = float(runtime_pruning_cfg.train_tau) if runtime_pruning_cfg is not None else 1.0
+                    tau1 = float(runtime_pruning_cfg.train_tau_final) if runtime_pruning_cfg is not None else tau0
                     tau1_f = float(tau1)
                     denom = max(1, int(config.num_train_steps) - 1)
                     t = min(1.0, max(0.0, float(global_step) / float(denom)))
@@ -708,8 +707,8 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                 ste_l_budget = torch.stack(l_budget_vals).mean()
                 ste_l_bin = torch.stack(l_bin_vals).mean()
 
-                lambda_budget = float(resolved_pruning_cfg.lambda_budget) if resolved_pruning_cfg is not None else 0.01
-                lambda_bin = float(resolved_pruning_cfg.lambda_bin) if resolved_pruning_cfg is not None else 0.01
+                lambda_budget = float(runtime_pruning_cfg.lambda_budget) if runtime_pruning_cfg is not None else 0.01
+                lambda_bin = float(runtime_pruning_cfg.lambda_bin) if runtime_pruning_cfg is not None else 0.01
                 loss = loss + lambda_budget * ste_l_budget + lambda_bin * ste_l_bin
 
                 with torch.no_grad():
@@ -759,7 +758,7 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                 }
                 if ve_pruning_handle is not None:
                     # Note: ste_stage/ste_tau are computed per step when condition is set.
-                    info["ste_prune_k"] = int(resolved_pruning_cfg.k) if resolved_pruning_cfg is not None else int(ve_pruning_handle.k)
+                    info["ste_prune_k"] = int(runtime_pruning_cfg.k) if runtime_pruning_cfg is not None else int(ve_pruning_handle.k)
                     info["ste_prune_tau"] = float(ste_tau) if ste_tau is not None else float(ve_pruning_handle.tau)
                     info["ste_prune_stage"] = str(ste_stage) if ste_stage is not None else str(ve_pruning_handle.stage)
                     if ste_l_budget is not None:
