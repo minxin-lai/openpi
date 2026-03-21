@@ -39,9 +39,8 @@ legacy inside-encoder reference:
 
 统一 runtime 口径：
 
-- `OPENPI_TORCH_COMPILE=1`
-- `OPENPI_TORCH_COMPILE_MODE=reduce-overhead`
-- 不显式设置 `TRITON_AUTOTUNE` / `TORCHINDUCTOR_MAX_AUTOTUNE`
+- 默认使用 PyTorch 的 `torch.compile(...)` 默认行为
+- 如需完全关闭编译，显式设置 `OPENPI_TORCH_COMPILE=0`
 
 observe / dump 语义：
 
@@ -95,7 +94,6 @@ Terminal 1:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
   --run-tag baseline \
   --ckpt-dir checkpoints/pi05_libero_spatial/pi05_baseline/29999 \
@@ -123,7 +121,6 @@ bash tools/eval_libero.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero.sh \
   --run-tag baseline \
   --ckpt-dir checkpoints/pi05_libero_spatial/pi05_baseline/29999 \
@@ -144,7 +141,6 @@ Terminal 1:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
   --run-tag inside_t64 \
   --ckpt-dir checkpoints/pi05_libero_spatial/inside_t64/59999 \
@@ -173,7 +169,6 @@ bash tools/eval_libero.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero_dump.sh \
   --run-tag inside_t64 \
   --ckpt-dir checkpoints/pi05_libero_spatial/inside_t64/59999 \
@@ -197,7 +192,6 @@ bash tools/run_libero_dump.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero.sh \
   --run-tag inside_t64 \
   --ckpt-dir checkpoints/pi05_libero_spatial/inside_t64/59999 \
@@ -217,7 +211,6 @@ Terminal 1:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
   --run-tag inside_t64_gauss \
   --ckpt-dir checkpoints/pi05_libero_spatial/inside_t64/59999 \
@@ -246,7 +239,6 @@ bash tools/eval_libero.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero_dump.sh \
   --run-tag inside_t64_gauss \
   --ckpt-dir checkpoints/pi05_libero_spatial/inside_t64/59999 \
@@ -262,7 +254,6 @@ bash tools/run_libero_dump.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero.sh \
   --run-tag inside_t64_gauss \
   --ckpt-dir checkpoints/pi05_libero_spatial/inside_t64/59999 \
@@ -284,7 +275,6 @@ Terminal 1:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
   --run-tag inside_t128 \
   --ckpt-dir checkpoints/pi05_libero_spatial/inside_t128/59999 \
@@ -313,7 +303,6 @@ bash tools/eval_libero.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero_dump.sh \
   --run-tag inside_t128 \
   --ckpt-dir checkpoints/pi05_libero_spatial/inside_t128/59999 \
@@ -329,7 +318,6 @@ bash tools/run_libero_dump.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero.sh \
   --run-tag inside_t128 \
   --ckpt-dir checkpoints/pi05_libero_spatial/inside_t128/59999 \
@@ -349,7 +337,6 @@ Terminal 1:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
   --run-tag inside_t128_gauss \
   --ckpt-dir checkpoints/pi05_libero_spatial/inside_t128/59999 \
@@ -378,7 +365,6 @@ bash tools/eval_libero.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero_dump.sh \
   --run-tag inside_t128_gauss \
   --ckpt-dir checkpoints/pi05_libero_spatial/inside_t128/59999 \
@@ -394,7 +380,6 @@ bash tools/run_libero_dump.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero.sh \
   --run-tag inside_t128_gauss \
   --ckpt-dir checkpoints/pi05_libero_spatial/inside_t128/59999 \
@@ -416,7 +401,6 @@ Terminal 1:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
   --run-tag post_t64 \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
@@ -445,7 +429,6 @@ bash tools/eval_libero.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero_dump.sh \
   --run-tag post_t64 \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
@@ -461,7 +444,6 @@ bash tools/run_libero_dump.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero.sh \
   --run-tag post_t64 \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
@@ -483,7 +465,6 @@ Terminal 1:
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
   --run-tag post_t128 \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t128/59999 \
@@ -512,7 +493,6 @@ bash tools/eval_libero.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero_dump.sh \
   --run-tag post_t128 \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t128/59999 \
@@ -528,7 +508,6 @@ bash tools/run_libero_dump.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero.sh \
   --run-tag post_t128 \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t128/59999 \
@@ -546,7 +525,6 @@ gaussian 是推理时通过 `--opt-config` 打开的，checkpoint 仍然用 prun
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
   --run-tag post_t64_gauss \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
@@ -575,7 +553,6 @@ bash tools/eval_libero.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero_dump.sh \
   --run-tag post_t64_gauss \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
@@ -591,7 +568,6 @@ bash tools/run_libero_dump.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero.sh \
   --run-tag post_t64_gauss \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
@@ -609,7 +585,6 @@ gaussian 是推理时通过 `--opt-config` 打开的，checkpoint 仍然用 prun
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/serve_pi05_libero.sh \
   --run-tag post_t128_gauss \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t128/59999 \
@@ -638,7 +613,6 @@ bash tools/eval_libero.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero_dump.sh \
   --run-tag post_t128_gauss \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t128/59999 \
@@ -654,7 +628,6 @@ bash tools/run_libero_dump.sh \
 ```bash
 cd /workspace/laiminxin/vla-opt/third_party/openpi
 
-OPENPI_TORCH_COMPILE=1 OPENPI_TORCH_COMPILE_MODE=reduce-overhead \
 bash tools/run_libero.sh \
   --run-tag post_t128_gauss \
   --ckpt-dir checkpoints/pi05_libero_spatial/post_t128/59999 \

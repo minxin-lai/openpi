@@ -14,9 +14,8 @@
 ## 统一统计口径
 
 - runtime profile：
-  - `OPENPI_TORCH_COMPILE=1`
-  - `OPENPI_TORCH_COMPILE_MODE=reduce-overhead`
-  - 不显式设置 `TRITON_AUTOTUNE` / `TORCHINDUCTOR_MAX_AUTOTUNE`
+  - 默认使用 PyTorch 的 `torch.compile(...)` 默认行为
+  - 如需完全关闭编译，显式设置 `OPENPI_TORCH_COMPILE=0`
 - 评测命令统一使用 `--suite libero_spatial --trials 50`
 - 推理时间口径统一取同一次 client log 里的 `policy_infer_ms`
 - 每个表格行只能对应一个真实 run：
@@ -64,3 +63,25 @@
 | `post_t64_gauss` | 29999 | 64 | 25% | on | `474 / 500` / `486 / 500` | `94.8%` / `97.2%` |
 | `post_t128` | 59999 | 128 | 50% | off | `480 / 500` / `482 / 500` | `96.0%` / `96.4%` |
 | `post_t128_gauss` | 59999 | 128 | 50% | on | `485 / 500` / `481 / 500` | `97.0%` / `96.2%` |
+
+## 2026-03-21 Parallel Split 重跑结果
+
+以下结果对应本次 `tools/run_libero_parallel_split.sh` 重跑后各 variant 的最新一次普通评测目录，统计口径仍为 `--suite libero_spatial --trials 50`，`Total episodes = 500`。
+
+| variant | latest run dir | success / total | total success rate | policy_infer_ms mean | policy_infer_ms p50 | policy_infer_ms p95 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `inside_t64` | `runs/inside_t64/59999_20260321_150506` | `474 / 500` | `94.8%` | `103.90` | `99.91` | `104.70` |
+| `inside_t64_gauss` | `runs/inside_t64_gauss/59999_20260321_150506` | `473 / 500` | `94.6%` | `106.92` | `103.31` | `116.61` |
+| `inside_t128` | `runs/inside_t128/59999_20260321_161530` | `466 / 500` | `93.2%` | `107.53` | `103.69` | `107.06` |
+| `inside_t128_gauss` | `runs/inside_t128_gauss/59999_20260321_161644` | `478 / 500` | `95.6%` | `106.15` | `103.01` | `110.35` |
+| `post_t64` | `runs/post_t64/29999_20260321_172708` | `480 / 500` | `96.0%` | `132.00` | `125.37` | `142.86` |
+| `post_t64_gauss` | `runs/post_t64_gauss/29999_20260321_184253` | `471 / 500` | `94.2%` | `132.40` | `128.48` | `143.05` |
+| `post_t128` | `runs/post_t128/59999_20260321_172613` | `486 / 500` | `97.2%` | `136.78` | `131.54` | `142.99` |
+| `post_t128_gauss` | `runs/post_t128_gauss/59999_20260321_184318` | `483 / 500` | `96.6%` | `132.88` | `127.97` | `144.69` |
+
+简要观察：
+
+- 本轮最佳结果是 `post_t128`，达到 `486 / 500`，`97.2%`。
+- `inside_t128_gauss` 明显优于 `inside_t128`，从 `93.2%` 提升到 `95.6%`。
+- 本轮 `post_t64_gauss` 低于 `post_t64`，没有复现旧表里更优的那次结果。
+- 时长口径补充为对应 `client.log` 中逐步记录的 `policy_infer_ms` 统计；当前日志里没有统一输出完整 run 的总 wall-clock 时间。
