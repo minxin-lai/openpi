@@ -19,16 +19,20 @@
 当前代码里有两件事需要分开看：
 
 - **配置语义**：两类配置都定义了 `train_stage` 与 `serve_stage`，也都允许 `mask / gather`。
-- **明确接线状态**：当前仓内最明确、最直接的主入口接线是 `serve / eval` 侧；训练侧链路在配置对象和模块能力上已经定义，但文档里应按“当前配置语义 + 模块执行形态”描述，不把它写成“已经完整接入训练主入口自动切换”。
+- **明确接线状态**：
+  - `serve / eval` 侧已经通过 pruning config + runtime config 明确接通
+  - `train_pytorch.py` 也已经接入训练期 pruning runtime
+  - 当 `train_stage=auto` 且提供 `train_schedule` 时，训练侧会按进度切换 `stage / k`
+  - 如果旧 YAML 没有 `train_schedule`，仍保持现有 `switch_step/半程切换` 行为
 
 因此，下文的“训练侧链路”表示：
 
-- 这些模块在训练阶段应如何工作
-- 以及当前配置是如何定义它们的
+- 当前训练入口如何实际驱动这些模块
+- 以及当前配置如何定义它们的阶段行为
 
 而“推理侧链路”表示：
 
-- 当前 `load_pytorch -> resolve_for_serve -> enable_openpi_pruning_from_config` 这条明确接通的实际执行路径
+- 当前 `load_pruning_config(...) -> to_runtime("serve") -> enable_pi05_pruning_from_runtime_config(...)` 这条明确接通的实际执行路径
 
 ## 3. 最核心差别
 
@@ -62,7 +66,7 @@ encoder 后剪枝：
 encoder 内剪枝：
 
 - 分数来自单个剪枝层的当前特征。
-- 当前实现要求 `legacy_inside_encoder` 的 `score_num_layers == 1`。
+- 当前实现要求 `inside_encoder` 的 `score_num_layers == 1`。
 
 encoder 后剪枝：
 
@@ -244,7 +248,7 @@ compute_loss
 ## 5. 推理侧完整链路
 
 > 这里描述的是当前仓内最明确接通的实际执行路径。
-> 主入口是通过 pruning config 加载模型，并使用 `resolve_for_serve()` 得到 `stage=serve_stage`。
+> 主入口是通过 pruning config 加载模型，并使用 `to_runtime("serve")` 得到 `stage=serve_stage`。
 
 ### 5.1 encoder 内剪枝：推理侧链路
 
@@ -253,9 +257,9 @@ load_pytorch
   ↓
 读取 pruning config
   ↓
-resolve_for_serve()
+to_runtime("serve")
   ↓
-enable_openpi_pruning_from_config
+enable_pi05_pruning_from_runtime_config
   ↓
 先启用 FiLM
   ↓
@@ -296,9 +300,9 @@ load_pytorch
   ↓
 读取 pruning config
   ↓
-resolve_for_serve()
+to_runtime("serve")
   ↓
-enable_openpi_pruning_from_config
+enable_pi05_pruning_from_runtime_config
   ↓
 先启用 FiLM
   ↓
@@ -367,13 +371,26 @@ embed_prefix
 
 - 当前汇总表中的方案名：`pruning_inside_encoder`
 - 当前 canonical 配置：`inside_t64*.yaml` 与 `inside_t128*.yaml`
-- `mode`: `legacy_inside_encoder`
+- `mode`: `inside_encoder`
 
 `pruning_after_encoder` 对应：
 
 - 当前汇总表中的方案名：`pruning_after_encoder`
 - 当前 canonical 配置：`post_t64*.yaml` 与 `post_t128*.yaml`
 - `mode`: `post_encoder`
+
+`cross_attn_post` 对应：
+
+- 当前新增方法族：`cross_attn_post`
+- 当前 canonical 配置：`cross_attn_post_t64_gauss.yaml`
+- `mode`: `post_encoder`
+- 与 `post_t64_gauss` 的关系：
+  - 两者都走 `post_encoder`
+  - 两者都保留 `FiLM`
+  - 两者都在 `gauss -> top-k -> mask/gather` 这条主链上工作
+  - 区别是 `post_t64_gauss` 仍使用 `pooled_mlp score head`
+  - `cross_attn_post_t64_gauss` 改为 `cross_attn score head`
+  - `cross_attn_post_t64_gauss` 的 canonical 默认是最后 `3` 个 FiLM 层，并聚合最后 `3` 层 score
 
 ## 8. 高斯 score 后处理变体
 

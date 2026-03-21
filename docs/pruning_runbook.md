@@ -83,6 +83,50 @@ Client 默认跑完整 LIBERO 评测：
 | `pruning_after_encoder` | `post_t128` | `bash tools/run_libero.sh --run-tag post_t128 --ckpt-dir checkpoints/pi05_libero_spatial/post_t128/59999 --policy-config pi05_libero_spatial --opt-config config/pruning/post_t128.yaml --port 9006 --gpu 0 --trials 50` |
 | `pruning_after_encoder` | `post_t128_gauss` | `bash tools/run_libero.sh --run-tag post_t128_gauss --ckpt-dir checkpoints/pi05_libero_spatial/post_t128/59999 --policy-config pi05_libero_spatial --opt-config config/pruning/post_t128_gauss.yaml --port 9008 --gpu 0 --trials 50` |
 
+## Experimental Variant
+
+当前新增一个实验方法：
+
+- `cross_attn_post_t64_gauss`
+- 配置文件：`config/pruning/cross_attn_post_t64_gauss.yaml`
+- 方法关系：
+  - 仍然是 `post_encoder`
+  - 仍然保留 `FiLM`
+  - 默认覆盖最后 `3` 个 FiLM 层，并聚合最后 `3` 层 score
+  - 与 `post_t64_gauss` 的区别，是 score head 从 `pooled_mlp` 升级为 `cross_attn`
+
+当前 runbook 先提供单独命令模板，不把它加入默认并行脚本队列；原因是并行脚本现在只承载已有 canonical 基线，而 `cross_attn_post_t64_gauss` 的 checkpoint 路径需要按实际训练结果填写。
+
+一键运行模板：
+
+```bash
+cd /workspace/laiminxin/vla-opt/third_party/openpi
+
+bash tools/run_libero.sh \
+  --run-tag cross_attn_post_t64_gauss \
+  --ckpt-dir <ckpt-dir> \
+  --policy-config pi05_libero_spatial \
+  --opt-config config/pruning/cross_attn_post_t64_gauss.yaml \
+  --port 9009 \
+  --gpu 0 \
+  --trials 50
+```
+
+一键 dump 模板：
+
+```bash
+cd /workspace/laiminxin/vla-opt/third_party/openpi
+
+bash tools/run_libero_dump.sh \
+  --run-tag cross_attn_post_t64_gauss \
+  --ckpt-dir <ckpt-dir> \
+  --policy-config pi05_libero_spatial \
+  --opt-config config/pruning/cross_attn_post_t64_gauss.yaml \
+  --port 9009 \
+  --gpu 0 \
+  --trials 1
+```
+
 ## Baseline
 
 checkpoint:

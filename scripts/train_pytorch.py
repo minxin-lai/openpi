@@ -338,6 +338,48 @@ def log_memory_usage(device, step, phase="unknown"):
     )
 
 
+def _normalize_hw(value):
+    if isinstance(value, int):
+        if value <= 0:
+            return None
+        return (int(value), int(value))
+    if isinstance(value, (tuple, list)) and len(value) == 2:
+        h, w = int(value[0]), int(value[1])
+        if h <= 0 or w <= 0:
+            return None
+        return (h, w)
+    return None
+
+
+def _resolve_patch_size(model):
+    pge = getattr(model, "paligemma_with_expert", None)
+    paligemma = getattr(pge, "paligemma", None)
+    pgm = getattr(paligemma, "model", None)
+    vision_tower = getattr(pgm, "vision_tower", None)
+    config = getattr(vision_tower, "config", None)
+    patch_size = getattr(config, "patch_size", None)
+    return _normalize_hw(patch_size)
+
+
+def _infer_train_schedule_input_tokens(model, observation) -> int | None:
+    images = getattr(observation, "images", None)
+    if not isinstance(images, dict) or len(images) == 0:
+        return None
+    image = next(iter(images.values()))
+    image_shape = getattr(image, "shape", None)
+    if image_shape is None or len(image_shape) != 4:
+        return None
+    patch_size = _resolve_patch_size(model)
+    if patch_size is None:
+        return None
+    image_hw = (int(image_shape[-2]), int(image_shape[-1]))
+    if image_hw[0] <= 0 or image_hw[1] <= 0:
+        return None
+    if image_hw[0] % patch_size[0] != 0 or image_hw[1] % patch_size[1] != 0:
+        return None
+    return int((image_hw[0] // patch_size[0]) * (image_hw[1] // patch_size[1]))
+
+
 def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
     use_ddp, local_rank, device = setup_ddp()
     is_main = (not use_ddp) or (dist.get_rank() == 0)
@@ -472,7 +514,7 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
         from vla_opt.integrations.openpi_pi05 import (
             enable_pi05_pruning_from_runtime_config,
         )
-        from vla_opt.pruning import load_pruning_config
+        from vla_opt.pruning import keep_ratio_to_k, load_pruning_config, resolve_train_schedule_entry
         from modules.ste_pruning import pruning_losses as _pruning_losses
 
         pruning_cfg = load_pruning_config(extra.vla_opt_pruning_config)
@@ -652,11 +694,29 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                     if stage_cfg in {"2", "stage2"}:
                         stage_cfg = "gather"
                     if stage_cfg == "auto":
-                        _raw_ss = runtime_pruning_cfg.switch_step if runtime_pruning_cfg is not None else None
-                        switch_step = int(_raw_ss) if _raw_ss is not None else -1
-                        if switch_step < 0:
-                            switch_step = int(config.num_train_steps) // 2
-                        ste_stage = "mask" if int(global_step) < int(switch_step) else "gather"
+                        schedule = tuple(runtime_pruning_cfg.train_schedule) if runtime_pruning_cfg is not None else ()
+                        if schedule:
+                            denom = max(1, int(config.num_train_steps) - 1)
+                            progress = min(1.0, max(0.0, float(global_step) / float(denom)))
+                            entry = resolve_train_schedule_entry(schedule, progress=progress)
+                            if entry is None:
+                                raise RuntimeError("train_stage=auto with non-empty train_schedule resolved no active entry")
+                            ste_stage = str(entry.stage)
+                            input_tokens = _infer_train_schedule_input_tokens(raw_model, observation)
+                            if input_tokens is None:
+                                raise RuntimeError("Failed to infer image token count for train_schedule keep_ratio -> k")
+                            ve_pruning_handle.set_k(
+                                keep_ratio_to_k(
+                                    keep_ratio=float(entry.keep_ratio),
+                                    input_tokens=int(input_tokens),
+                                )
+                            )
+                        else:
+                            _raw_ss = runtime_pruning_cfg.switch_step if runtime_pruning_cfg is not None else None
+                            switch_step = int(_raw_ss) if _raw_ss is not None else -1
+                            if switch_step < 0:
+                                switch_step = int(config.num_train_steps) // 2
+                            ste_stage = "mask" if int(global_step) < int(switch_step) else "gather"
                     else:
                         ste_stage = stage_cfg
 
@@ -758,7 +818,7 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                 }
                 if ve_pruning_handle is not None:
                     # Note: ste_stage/ste_tau are computed per step when condition is set.
-                    info["ste_prune_k"] = int(runtime_pruning_cfg.k) if runtime_pruning_cfg is not None else int(ve_pruning_handle.k)
+                    info["ste_prune_k"] = int(ve_pruning_handle.k)
                     info["ste_prune_tau"] = float(ste_tau) if ste_tau is not None else float(ve_pruning_handle.tau)
                     info["ste_prune_stage"] = str(ste_stage) if ste_stage is not None else str(ve_pruning_handle.stage)
                     if ste_l_budget is not None:
