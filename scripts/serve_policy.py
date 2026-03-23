@@ -7,7 +7,10 @@ import sys
 from pathlib import Path
 
 _repo_root = Path(__file__).resolve().parents[3]
+_openpi_src = Path(__file__).resolve().parents[1] / "src"
 _vla_src = _repo_root / "src"
+if _openpi_src.exists() and str(_openpi_src) not in sys.path:
+    sys.path.insert(0, str(_openpi_src))
 if _vla_src.exists() and str(_vla_src) not in sys.path:
     sys.path.insert(0, str(_vla_src))
 

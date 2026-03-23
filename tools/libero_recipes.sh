@@ -11,16 +11,16 @@ set -euo pipefail
 # ============================================================================
 
 # Spatial suite run:
-bash tools/run_libero.sh \
-  --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
-  --policy-config pi05_libero_spatial \
-  --opt-config config/pruning/post_t64.yaml \
-  --host 127.0.0.1 \
-  --suite libero_spatial \
-  --trials 2 \
-  --gpu 0 \
-  --port 8003 \
-  --run-tag post_t64
+# bash tools/run_libero.sh \
+#   --ckpt-dir checkpoints/pi05_libero_spatial/post_t64/29999 \
+#   --policy-config pi05_libero_spatial \
+#   --opt-config config/pruning/post_t64.yaml \
+#   --host 127.0.0.1 \
+#   --suite libero_spatial \
+#   --trials 2 \
+#   --gpu 0 \
+#   --port 8003 \
+#   --run-tag post_t64
 
 # Full LIBERO run:
 # bash tools/run_libero.sh \
@@ -81,6 +81,67 @@ bash tools/run_libero.sh \
 # ============================================================================
 # Parallel Eval Sweep
 # ============================================================================
+
+# Parallel full LIBERO eval on 4 GPUs:
+# Usage:
+#   1. edit ckpt_dir if needed
+#   2. run: source tools/libero_recipes.sh && recipe_parallel_eval_libero_all
+recipe_parallel_eval_libero_all() {
+  local ckpt_dir="checkpoints/pi05_libero_all_cross_attn_post_gauss/cross_attn_post_t64_gauss/60000"
+  local policy_config="pi05_libero_all_cross_attn_post_gauss"
+  local opt_config="config/pruning/cross_attn_post_t64_gauss.yaml"
+  local host="127.0.0.1"
+  local trials="50"
+
+  # Pin imports to this worktree because another OpenPI checkout is also installed locally.
+  export PYTHONPATH="/workspace/laiminxin/post_gauss_attn/third_party/openpi/src:/workspace/laiminxin/post_gauss_attn/src${PYTHONPATH:+:${PYTHONPATH}}"
+
+  bash tools/run_libero.sh \
+    --ckpt-dir "${ckpt_dir}" \
+    --policy-config "${policy_config}" \
+    --opt-config "${opt_config}" \
+    --host "${host}" \
+    --suite libero_spatial \
+    --trials "${trials}" \
+    --gpu 1 \
+    --port 8001 \
+    --run-tag cross_attn_post_step60000_spatial &
+
+  bash tools/run_libero.sh \
+    --ckpt-dir "${ckpt_dir}" \
+    --policy-config "${policy_config}" \
+    --opt-config "${opt_config}" \
+    --host "${host}" \
+    --suite libero_object \
+    --trials "${trials}" \
+    --gpu 2 \
+    --port 8002 \
+    --run-tag cross_attn_post_step60000_object &
+
+  bash tools/run_libero.sh \
+    --ckpt-dir "${ckpt_dir}" \
+    --policy-config "${policy_config}" \
+    --opt-config "${opt_config}" \
+    --host "${host}" \
+    --suite libero_goal \
+    --trials "${trials}" \
+    --gpu 3 \
+    --port 8003 \
+    --run-tag cross_attn_post_step60000_goal &
+
+  bash tools/run_libero.sh \
+    --ckpt-dir "${ckpt_dir}" \
+    --policy-config "${policy_config}" \
+    --opt-config "${opt_config}" \
+    --host "${host}" \
+    --suite libero_10 \
+    --trials "${trials}" \
+    --gpu 4 \
+    --port 8004 \
+    --run-tag cross_attn_post_step60000_libero10 &
+
+  wait
+}
 
 # Parallel spatial eval sweep:
 # Usage:
