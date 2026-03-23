@@ -19,15 +19,15 @@ Usage:
   bash tools/run_libero.sh [options...]
 
 Options:
-  --ckpt-dir <dir>       checkpoint directory containing model.safetensors
-  --policy-config <name> default: pi05_libero_spatial
+  --ckpt-dir <dir>       required checkpoint directory containing model.safetensors
+  --policy-config <name> required policy config name
   --opt-config <path>    optional experiment config
-  --gpu <id>             default: 0
-  --port <port>          default: 8003
-  --run-tag <tag>        default: pi05_libero_run
-  --suite <name>         default: libero_spatial
-  --trials <n>           default: 50
-  --host <ip>            default: 127.0.0.1
+  --gpu <id>             required CUDA_VISIBLE_DEVICES value
+  --port <port>          required server port
+  --run-tag <tag>        required run label
+  --suite <name>         required LIBERO suite name
+  --trials <n>           required number of trials per task
+  --host <ip>            required client host
   --launcher-log <path>  default: runs/<run_tag>/<ts>/server/launcher.log
   --server-log <path>    default: runs/<run_tag>/<ts>/server/server.log
   --client-log <path>    default: runs/<run_tag>/<ts>/client/client.log
@@ -36,14 +36,14 @@ EOF
 }
 
 ckpt_dir=""
-policy_config="pi05_libero_spatial"
+policy_config=""
 opt_config=""
-gpu="0"
-port="8003"
-run_tag="pi05_libero_run"
-suite="libero_spatial"
-trials="50"
-host="127.0.0.1"
+gpu=""
+port=""
+run_tag=""
+suite=""
+trials=""
+host=""
 launcher_log=""
 server_log=""
 client_log=""
@@ -169,6 +169,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "${ckpt_dir}" ]] || die "--ckpt-dir is required"
+[[ -n "${policy_config}" ]] || die "--policy-config is required"
+[[ -n "${gpu}" ]] || die "--gpu is required"
+[[ -n "${port}" ]] || die "--port is required"
+[[ -n "${run_tag}" ]] || die "--run-tag is required"
+[[ -n "${suite}" ]] || die "--suite is required"
+[[ -n "${trials}" ]] || die "--trials is required"
+[[ -n "${host}" ]] || die "--host is required"
 
 ts="$(date +%Y%m%d_%H%M%S)"
 step_label="$(extract_ckpt_step "${ckpt_dir}")"
@@ -225,7 +232,7 @@ if [[ "${wait_status}" -ne 0 ]]; then
 fi
 
 set +e
-bash "${script_dir}/eval_libero.sh" \
+bash "${script_dir}/client_libero.sh" \
   --host "${host}" \
   --port "${port}" \
   --suite "${suite}" \

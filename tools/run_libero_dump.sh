@@ -21,36 +21,38 @@ Usage:
   bash tools/run_libero_dump.sh [options...]
 
 Options:
-  --ckpt-dir <dir>            checkpoint directory containing model.safetensors
-  --policy-config <name>      default: pi05_libero_spatial
-  --opt-config <path>         required experiment config
-  --gpu <id>                  default: 0
-  --port <port>               default: 8003
-  --run-tag <tag>             default: pi05_libero_dump
-  --suite <name>              default: libero_spatial
-  --trials <n>                default: 1
-  --host <ip>                 default: 127.0.0.1
+  --ckpt-dir <dir>            required checkpoint directory containing model.safetensors
+  --policy-config <name>      required policy config name
+  --opt-config <path>         required pruning config
+  --gpu <id>                  required CUDA_VISIBLE_DEVICES value
+  --port <port>               required server port
+  --run-tag <tag>             required run label
+  --suite <name>              required LIBERO suite name
+  --trials <n>                required number of trials per task
+  --host <ip>                 required client host
   --launcher-log <path>       default: runs/<run_tag>/<ts>/server/launcher.log
   --server-log <path>         default: runs/<run_tag>/<ts>/server/server.log
   --client-log <path>         default: runs/<run_tag>/<ts>/client/client.log
   --video-out <path>          default: runs/<run_tag>/<ts>/client/videos
-  --observe-output-dir <dir>  default: runs/<run_tag>/<ts>/observe
+  --observe-config <path>     required observe config
+  --observe-output-dir <dir>  optional explicit observe output dir
 EOF
 }
 
 ckpt_dir=""
-policy_config="pi05_libero_spatial"
+policy_config=""
 opt_config=""
-gpu="0"
-port="8003"
-run_tag="pi05_libero_dump"
-suite="libero_spatial"
-trials="1"
-host="127.0.0.1"
+gpu=""
+port=""
+run_tag=""
+suite=""
+trials=""
+host=""
 launcher_log=""
 server_log=""
 client_log=""
 video_out=""
+observe_config=""
 observe_output_dir=""
 
 server_pid=""
@@ -172,13 +174,23 @@ while [[ $# -gt 0 ]]; do
     --server-log) server_log="${2:?}"; shift 2 ;;
     --client-log) client_log="${2:?}"; shift 2 ;;
     --video-out) video_out="${2:?}"; shift 2 ;;
+    --observe-config) observe_config="${2:?}"; shift 2 ;;
     --observe-output-dir) observe_output_dir="${2:?}"; shift 2 ;;
     *) die "Unknown option: $1 (run --help)" ;;
   esac
 done
 
 [[ -n "${ckpt_dir}" ]] || die "--ckpt-dir is required"
+[[ -n "${policy_config}" ]] || die "--policy-config is required"
 [[ -n "${opt_config}" ]] || die "--opt-config is required for dump runs"
+[[ -n "${gpu}" ]] || die "--gpu is required"
+[[ -n "${port}" ]] || die "--port is required"
+[[ -n "${run_tag}" ]] || die "--run-tag is required"
+[[ -n "${suite}" ]] || die "--suite is required"
+[[ -n "${trials}" ]] || die "--trials is required"
+[[ -n "${host}" ]] || die "--host is required"
+[[ -n "${observe_config}" ]] || die "--observe-config must not be empty"
+[[ -f "${observe_config}" ]] || die "Missing observe config: ${observe_config}"
 
 ts="$(date +%Y%m%d_%H%M%S)"
 step_label="$(extract_ckpt_step "${ckpt_dir}")"
@@ -207,6 +219,7 @@ echo "launcher_log: ${launcher_log}"
 echo "server_log: ${server_log}"
 echo "client_log: ${client_log}"
 echo "video_out: ${video_out}"
+echo "observe_config: ${observe_config}"
 echo "observe_output_dir: ${observe_output_dir}"
 echo
 
@@ -218,7 +231,7 @@ bash "${script_dir}/serve_pi05_libero.sh" \
   --port "${port}" \
   --run-tag "${run_tag}" \
   --log "${server_log}" \
-  --observe-config "${vla_opt_repo_dir}/configs/observe/infer_debug.json" \
+  --observe-config "${observe_config}" \
   --observe-output-dir "${observe_output_dir}" \
   >>"${launcher_log}" 2>&1 &
 server_pid=$!
@@ -238,7 +251,7 @@ if [[ -n "${observe_dump_dir}" ]]; then
 fi
 
 set +e
-bash "${script_dir}/eval_libero.sh" \
+bash "${script_dir}/client_libero.sh" \
   --host "${host}" \
   --port "${port}" \
   --suite "${suite}" \

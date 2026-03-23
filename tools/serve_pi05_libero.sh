@@ -21,11 +21,11 @@ Usage:
   bash tools/serve_pi05_libero.sh [options...]
 
 Options:
-  --ckpt-dir <dir>            checkpoint directory containing model.safetensors
-  --policy-config <name>      default: pi05_libero_spatial
-  --opt-config <path>         optional experiment config
-  --gpu <id>                  default: 0
-  --port <port>               default: 8003
+  --ckpt-dir <dir>            required checkpoint directory containing model.safetensors
+  --policy-config <name>      required policy config name
+  --opt-config <path>         optional pruning config
+  --gpu <id>                  required CUDA_VISIBLE_DEVICES value
+  --port <port>               required server port
   --run-tag <tag>             optional run label
   --log <path>                optional explicit log path
   --observe-config <path>     optional observe config, experiment mode only
@@ -36,10 +36,10 @@ EOF
 ts="$(date +%Y%m%d_%H%M%S)"
 
 ckpt_dir=""
-policy_config="pi05_libero_spatial"
+policy_config=""
 opt_config=""
-gpu="0"
-port="8003"
+gpu=""
+port=""
 run_tag=""
 log_path=""
 observe_config=""
@@ -62,18 +62,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "${ckpt_dir}" ]] || die "--ckpt-dir is required"
+[[ -n "${policy_config}" ]] || die "--policy-config is required"
+[[ -n "${gpu}" ]] || die "--gpu is required"
+[[ -n "${port}" ]] || die "--port is required"
 cd "${repo_dir}"
 
 [[ -f "${ckpt_dir}/model.safetensors" ]] || die "Missing ${ckpt_dir}/model.safetensors"
 command -v uv >/dev/null 2>&1 || die "Missing 'uv' in PATH"
 step_label="$(extract_ckpt_step "${ckpt_dir}")"
-
-norm_stats_path="/workspace/laiminxin/datasets/lerobot_datasets/libero_spatial/norm_stats.json"
-if [[ "${policy_config}" == "pi05_libero_spatial" && ! -f "${norm_stats_path}" ]]; then
-  echo "Missing norm stats: ${norm_stats_path}" >&2
-  echo "Hint: cd third_party/openpi && uv run scripts/compute_norm_stats.py --config-name ${policy_config}" >&2
-  exit 2
-fi
 
 if [[ -n "${opt_config}" && ! -f "${opt_config}" ]]; then
   die "Missing opt config: ${opt_config}"
@@ -92,9 +88,9 @@ if [[ -z "${log_path}" ]]; then
   if [[ -n "${run_tag}" ]]; then
     log_path="runs/${run_tag}/server_${ts}.log"
   elif [[ -n "${opt_config}" ]]; then
-    log_path="runs/openpi_pi05_libero_server_opt_${ts}.log"
+    log_path="runs/libero_server_opt_${ts}.log"
   else
-    log_path="runs/openpi_pi05_libero_server_baseline_${ts}.log"
+    log_path="runs/libero_server_baseline_${ts}.log"
   fi
 fi
 mkdir -p "$(dirname "${log_path}")"
@@ -107,7 +103,7 @@ if [[ -n "${observe_config}" ]]; then
   elif [[ -n "${run_tag}" ]]; then
     observe_dump_dir="${repo_dir}/runs/${run_tag}/observe_${step_label}_${ts}"
   else
-    observe_dump_dir="${repo_dir}/runs/openpi_pi05_libero/observe_${step_label}_${ts}"
+    observe_dump_dir="${repo_dir}/runs/libero_observe_${step_label}_${ts}"
   fi
   mkdir -p "${observe_dump_dir}"
   observe_runtime_config="${observe_dump_dir}/observe_config.json"

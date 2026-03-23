@@ -9,29 +9,31 @@ die() { echo "Error: $*" >&2; exit 2; }
 usage() {
   cat <<'EOF'
 Usage:
-  bash tools/eval_libero.sh [options...]
+  bash tools/client_libero.sh [options...]
 
 Options:
-  --host <ip>         default: 127.0.0.1
-  --port <port>       default: 8003
-  --suite <name>      default: libero_spatial (libero_spatial|libero_object|libero_goal|libero_10)
-  --trials <n>        default: 20
-  --gpu <id>          default: 0 (CUDA_VISIBLE_DEVICES)
-  --run-tag <tag>     default: pi05_libero_eval
-  --video-out <path>  default: runs/libero/videos/<run_tag>/<suite>_<ts>
-  --log <path>        default: runs/libero/logs/<run_tag>/<suite>_<ts>.log
+  --host <ip>         required server host
+  --port <port>       required server port
+  --suite <name>      required LIBERO suite name
+  --trials <n>        required number of trials per task
+  --gpu <id>          required CUDA_VISIBLE_DEVICES value
+  --run-tag <tag>     required run label used for derived outputs
+  --video-out <path>  optional explicit video output path
+  --log <path>        optional explicit client log path
+  --venv-dir <path>   optional LIBERO venv path, default: examples/libero/.venv
 EOF
 }
 
 ts="$(date +%Y%m%d_%H%M%S)"
-host="127.0.0.1"
-port="8003"
-suite="libero_spatial"
-trials="20"
-gpu="0"
-run_tag="pi05_libero_eval"
+host=""
+port=""
+suite=""
+trials=""
+gpu=""
+run_tag=""
 video_out=""
 log_path=""
+venv_dir="examples/libero/.venv"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,14 +46,20 @@ while [[ $# -gt 0 ]]; do
     --run-tag) run_tag="${2:?}"; shift 2 ;;
     --video-out) video_out="${2:?}"; shift 2 ;;
     --log) log_path="${2:?}"; shift 2 ;;
+    --venv-dir) venv_dir="${2:?}"; shift 2 ;;
     *) die "Unknown option: $1 (run --help)" ;;
   esac
 done
 
+[[ -n "${host}" ]] || die "--host is required"
+[[ -n "${port}" ]] || die "--port is required"
+[[ -n "${suite}" ]] || die "--suite is required"
+[[ -n "${trials}" ]] || die "--trials is required"
+[[ -n "${gpu}" ]] || die "--gpu is required"
+[[ -n "${run_tag}" ]] || die "--run-tag is required"
+
 cd "${repo_dir}"
 [[ -f "examples/libero/main.py" ]] || die "Run from third_party/openpi (missing examples/libero/main.py)"
-
-venv_dir="examples/libero/.venv"
 [[ -d "${venv_dir}" ]] || die "Venv not found: ${venv_dir} (create: uv venv --python 3.8 ${venv_dir})"
 
 if [[ -z "${video_out}" ]]; then
@@ -76,6 +84,7 @@ echo "gpu: ${gpu}"
 echo "run_tag: ${run_tag}"
 echo "video_out: ${video_out}"
 echo "log: ${log_path}"
+echo "venv_dir: ${venv_dir}"
 echo "mujoco_gl: ${MUJOCO_GL:-${default_gl_backend}}"
 echo "pyopengl_platform: ${PYOPENGL_PLATFORM:-${default_gl_backend}}"
 echo
