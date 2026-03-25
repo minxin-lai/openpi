@@ -24,6 +24,7 @@ Options:
   --ckpt-dir <dir>            required checkpoint directory containing model.safetensors
   --policy-config <name>      required policy config name
   --opt-config <path>         required pruning config
+  --record-only               skip observe dump/postprocess and only save policy_records
   --gpu <id>                  required CUDA_VISIBLE_DEVICES value
   --port <port>               required server port
   --run-tag <tag>             required run label
@@ -33,8 +34,9 @@ Options:
   --launcher-log <path>       default: runs/<run_tag>/<ts>/server/launcher.log
   --server-log <path>         default: runs/<run_tag>/<ts>/server/server.log
   --client-log <path>         default: runs/<run_tag>/<ts>/client/client.log
+  --record-dir <dir>          default: runs/<run_tag>/<ts>/server/policy_records
   --video-out <path>          default: runs/<run_tag>/<ts>/client/videos
-  --observe-config <path>     required observe config
+  --observe-config <path>     required unless --record-only
   --observe-output-dir <dir>  optional explicit observe output dir
 EOF
 }
@@ -44,6 +46,7 @@ policy_config=""
 opt_config=""
 gpu=""
 port=""
+record_only="false"
 run_tag=""
 suite=""
 trials=""
@@ -51,6 +54,7 @@ host=""
 launcher_log=""
 server_log=""
 client_log=""
+record_dir=""
 video_out=""
 observe_config=""
 observe_output_dir=""
@@ -164,6 +168,7 @@ while [[ $# -gt 0 ]]; do
     --ckpt-dir) ckpt_dir="${2:?}"; shift 2 ;;
     --policy-config) policy_config="${2:?}"; shift 2 ;;
     --opt-config) opt_config="${2:?}"; shift 2 ;;
+    --record-only) record_only="true"; shift ;;
     --gpu) gpu="${2:?}"; shift 2 ;;
     --port) port="${2:?}"; shift 2 ;;
     --run-tag) run_tag="${2:?}"; shift 2 ;;
@@ -173,6 +178,7 @@ while [[ $# -gt 0 ]]; do
     --launcher-log) launcher_log="${2:?}"; shift 2 ;;
     --server-log) server_log="${2:?}"; shift 2 ;;
     --client-log) client_log="${2:?}"; shift 2 ;;
+    --record-dir) record_dir="${2:?}"; shift 2 ;;
     --video-out) video_out="${2:?}"; shift 2 ;;
     --observe-config) observe_config="${2:?}"; shift 2 ;;
     --observe-output-dir) observe_output_dir="${2:?}"; shift 2 ;;
@@ -189,8 +195,12 @@ done
 [[ -n "${suite}" ]] || die "--suite is required"
 [[ -n "${trials}" ]] || die "--trials is required"
 [[ -n "${host}" ]] || die "--host is required"
-[[ -n "${observe_config}" ]] || die "--observe-config must not be empty"
-[[ -f "${observe_config}" ]] || die "Missing observe config: ${observe_config}"
+if [[ "${record_only}" != "true" ]]; then
+  [[ -n "${observe_config}" ]] || die "--observe-config must not be empty unless --record-only is set"
+fi
+if [[ -n "${observe_config}" ]]; then
+  [[ -f "${observe_config}" ]] || die "Missing observe config: ${observe_config}"
+fi
 
 ts="$(date +%Y%m%d_%H%M%S)"
 step_label="$(extract_ckpt_step "${ckpt_dir}")"
@@ -198,15 +208,29 @@ run_dir="runs/${run_tag}/viz_${step_label}_${ts}"
 launcher_log="${launcher_log:-${run_dir}/server/launcher.log}"
 server_log="${server_log:-${run_dir}/server/server.log}"
 client_log="${client_log:-${run_dir}/client/client.log}"
+record_dir="${record_dir:-${run_dir}/server/policy_records}"
 video_out="${video_out:-${run_dir}/client/videos}"
-observe_output_dir="${observe_output_dir:-${run_dir}/observe}"
+if [[ -n "${observe_config}" ]]; then
+  observe_output_dir="${observe_output_dir:-${run_dir}/observe}"
+fi
 
-mkdir -p "$(dirname "${launcher_log}")" "$(dirname "${server_log}")" "$(dirname "${client_log}")" "${video_out}" "${observe_output_dir}"
+mkdir_args=(
+  "$(dirname "${launcher_log}")"
+  "$(dirname "${server_log}")"
+  "$(dirname "${client_log}")"
+  "${record_dir}"
+  "${video_out}"
+)
+if [[ -n "${observe_output_dir}" ]]; then
+  mkdir_args+=("${observe_output_dir}")
+fi
+mkdir -p "${mkdir_args[@]}"
 
 echo "=== OpenPI Run (server + client + postprocess) ==="
 echo "ckpt: ${ckpt_dir}"
 echo "policy_config: ${policy_config}"
 echo "opt_config: ${opt_config}"
+echo "record_only: ${record_only}"
 echo "gpu: ${gpu}"
 echo "port: ${port}"
 echo "host: ${host}"
@@ -218,22 +242,30 @@ echo "run_dir: ${run_dir}"
 echo "launcher_log: ${launcher_log}"
 echo "server_log: ${server_log}"
 echo "client_log: ${client_log}"
+echo "record_dir: ${record_dir}"
 echo "video_out: ${video_out}"
-echo "observe_config: ${observe_config}"
-echo "observe_output_dir: ${observe_output_dir}"
+echo "observe_config: ${observe_config:-<off>}"
+echo "observe_output_dir: ${observe_output_dir:-<off>}"
 echo
 
-bash "${script_dir}/serve_pi05_libero.sh" \
-  --ckpt-dir "${ckpt_dir}" \
-  --policy-config "${policy_config}" \
-  --opt-config "${opt_config}" \
-  --gpu "${gpu}" \
-  --port "${port}" \
-  --run-tag "${run_tag}" \
-  --log "${server_log}" \
-  --observe-config "${observe_config}" \
-  --observe-output-dir "${observe_output_dir}" \
-  >>"${launcher_log}" 2>&1 &
+serve_args=(
+  --ckpt-dir "${ckpt_dir}"
+  --policy-config "${policy_config}"
+  --opt-config "${opt_config}"
+  --gpu "${gpu}"
+  --port "${port}"
+  --run-tag "${run_tag}"
+  --log "${server_log}"
+  --record-dir "${record_dir}"
+)
+if [[ -n "${observe_config}" ]]; then
+  serve_args+=(--observe-config "${observe_config}")
+fi
+if [[ -n "${observe_output_dir}" ]]; then
+  serve_args+=(--observe-output-dir "${observe_output_dir}")
+fi
+
+bash "${script_dir}/serve_pi05_libero.sh" "${serve_args[@]}" >>"${launcher_log}" 2>&1 &
 server_pid=$!
 
 wait_for_port "${host}" "${port}" 120
@@ -245,7 +277,7 @@ if [[ "${wait_status}" -ne 0 ]]; then
   die "Server did not become ready on ${host}:${port}. Check ${server_log}"
 fi
 
-observe_dump_dir="${observe_output_dir}"
+observe_dump_dir="${observe_output_dir:-}"
 if [[ -n "${observe_dump_dir}" ]]; then
   echo "observe_dump_dir: ${observe_dump_dir}"
 fi
@@ -266,7 +298,7 @@ set -e
 cleanup
 trap - EXIT INT TERM
 
-if [[ -d "${observe_dump_dir}" ]]; then
+if [[ "${record_only}" != "true" && -n "${observe_dump_dir}" && -d "${observe_dump_dir}" ]]; then
   export PYTHONPATH="${vla_opt_repo_dir}/src${PYTHONPATH:+:${PYTHONPATH}}"
   set +e
   uv run python -m vla_opt.observe.render_png --run-dir "${observe_dump_dir}"

@@ -77,6 +77,7 @@ class WebsocketPolicyServer:
                 logger.info(f"Connection from {websocket.remote_address} closed")
                 break
             except Exception:
+                logger.exception("Inference failed for connection %s", websocket.remote_address)
                 await websocket.send(traceback.format_exc())
                 await websocket.close(
                     code=websockets.frames.CloseCode.INTERNAL_ERROR,

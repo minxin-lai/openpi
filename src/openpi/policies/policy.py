@@ -170,11 +170,23 @@ class PolicyRecorder(_base_policy.BasePolicy):
         data = {"inputs": obs, "outputs": results}
         data = flax.traverse_util.flatten_dict(data, sep="/")
 
-        output_path = self._record_dir / f"step_{self._record_step}"
+        output_path = self._build_output_path(obs)
         self._record_step += 1
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
         np.save(output_path, np.asarray(data))
         return results
+
+    def _build_output_path(self, obs: dict[str, Any]) -> pathlib.Path:
+        trace_context = _extract_trace_context(obs)
+        if trace_context is None:
+            return self._record_dir / f"step_{self._record_step}"
+
+        task_id = int(trace_context.get("task_id", 0))
+        task_slug = _slugify(str(trace_context.get("task_slug", "task")))
+        episode_idx = int(trace_context.get("episode_idx", 0))
+        query_idx = int(trace_context.get("query_idx", self._record_step))
+        return self._record_dir / f"task_{task_id:02d}_{task_slug}" / f"episode_{episode_idx:03d}" / f"query_{query_idx:03d}"
 
 
 def _extract_trace_context(obs: dict[str, Any]) -> dict[str, Any] | None:
@@ -182,3 +194,16 @@ def _extract_trace_context(obs: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     return dict(value)
+
+
+def _slugify(value: str) -> str:
+    out = []
+    for ch in value.lower():
+        if ch.isalnum():
+            out.append(ch)
+        else:
+            out.append("_")
+    slug = "".join(out).strip("_")
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug or "task"

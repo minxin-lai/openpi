@@ -67,6 +67,8 @@ class Args:
     port: int = 8000
     # Record the policy's behavior for debugging.
     record: bool = False
+    # Explicit directory for recorded policy queries.
+    record_dir: str | None = None
 
     # ============================
     # VLA-OPT (Pi0.5 PyTorch wrapper)
@@ -154,7 +156,10 @@ def main(args: Args) -> None:
     policy_metadata = policy.metadata
 
     # Record the policy's behavior.
-    if args.record:
+    record_dir = str(args.record_dir).strip() if args.record_dir is not None else None
+    if record_dir:
+        policy = _policy.PolicyRecorder(policy, record_dir)
+    elif args.record:
         policy = _policy.PolicyRecorder(policy, "policy_records")
 
     hostname = socket.gethostname()

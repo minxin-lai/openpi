@@ -28,6 +28,7 @@ Options:
   --port <port>               required server port
   --run-tag <tag>             optional run label
   --log <path>                optional explicit log path
+  --record-dir <dir>          optional policy record output dir
   --observe-config <path>     optional observe config, experiment mode only
   --observe-output-dir <dir>  optional dump output dir, experiment mode only
 EOF
@@ -42,6 +43,7 @@ gpu=""
 port=""
 run_tag=""
 log_path=""
+record_dir=""
 observe_config=""
 observe_output_dir=""
 
@@ -55,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --port) port="${2:?}"; shift 2 ;;
     --run-tag) run_tag="${2:?}"; shift 2 ;;
     --log) log_path="${2:?}"; shift 2 ;;
+    --record-dir) record_dir="${2:?}"; shift 2 ;;
     --observe-config) observe_config="${2:?}"; shift 2 ;;
     --observe-output-dir) observe_output_dir="${2:?}"; shift 2 ;;
     *) die "Unknown option: $1 (run --help)" ;;
@@ -94,6 +97,9 @@ if [[ -z "${log_path}" ]]; then
   fi
 fi
 mkdir -p "$(dirname "${log_path}")"
+if [[ -n "${record_dir}" ]]; then
+  mkdir -p "${record_dir}"
+fi
 
 observe_runtime_config=""
 observe_dump_dir=""
@@ -138,6 +144,7 @@ echo "port: ${port}"
 echo "run_tag: ${run_tag:-<unset>}"
 echo "step_label: ${step_label}"
 echo "log: ${log_path}"
+echo "record_dir: ${record_dir:-<off>}"
 echo "opt_config: ${opt_config:-<off>}"
 echo "observe_config: ${observe_config:-<off>}"
 if [[ -n "${observe_dump_dir}" ]]; then
@@ -154,6 +161,9 @@ if [[ -n "${opt_config}" ]]; then
 fi
 if [[ -n "${observe_runtime_config}" ]]; then
   extra_args+=(--vla-opt-observe-config "${observe_runtime_config}")
+fi
+if [[ -n "${record_dir}" ]]; then
+  extra_args+=(--record-dir "${record_dir}")
 fi
 
 if [[ -z "${opt_config}" ]]; then

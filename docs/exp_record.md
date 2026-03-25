@@ -139,3 +139,28 @@
   | libero_goal | 95.2% | 95.6% | +0.4 |
   | libero_10 | 93.4% | 83.2% | -10.2 |
   | all 4 suites | 96.0% | 92.5% | -3.5 |
+
+## 2026-03-25 `cross_attn_post` step 89999 最新并行评测
+
+以下结果对应你最新一轮并行评测，配置固定为：
+
+- checkpoint：`checkpoints/pi05_libero_all_cross_attn_post_gauss/cross_attn_post_t64_gauss/89999`
+- policy config：`pi05_libero_all_cross_attn_post_gauss`
+- opt config：`config/pruning/cross_attn_post_t64_gauss.yaml`
+- host：`127.0.0.1`
+- trials：`50`
+
+| suite | run dir | success / total | total success rate | policy_infer_ms mean | policy_infer_ms p50 | policy_infer_ms p95 | note |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `libero_spatial` | `runs/cross_attn_post_step90k_spatial/89999_20260325_141803` | `481 / 500` | `96.2%` | `73.95` | `59.32` | `77.06` | 正常完成 |
+| `libero_object` | `runs/cross_attn_post_step90k_object/89999_20260325_141803` | `489 / 500` | `97.8%` | `75.92` | `54.75` | `100.17` | 正常完成 |
+| `libero_10` | `runs/cross_attn_post_step90k_libero10/89999_20260325_141803` | `421 / 500` | `84.2%` | `65.80` | `57.98` | `87.47` | 正常完成 |
+| `libero_goal` | `runs/cross_attn_post_step90k_goal/89999_20260325_182128` | `476 / 500` | `95.2%` | `61.65` | `59.16` | `60.10` | 正常完成 |
+
+简要观察：
+
+- 四个 suite 合计 `1867 / 2000`，总成功率 `93.35%`。
+- 四个 suite 里，`libero_object` 最好，达到 `489 / 500`，`97.8%`。
+- `libero_spatial` 也稳定在 `96.2%`，与上一轮 `step60000` 的 `95.4%` 相比提升 `+0.8`。
+- `libero_10` 本轮为 `421 / 500`，`84.2%`，相比上一轮 `step60000` 的 `83.2%` 小幅提升 `+1.0`。
+- `libero_goal` 最新重跑已恢复正常，达到 `476 / 500`，`95.2%`；`client.log` 与 `server.log` 中未再出现此前的 websocket `1011`、`cuDNN` 或 `CUDA graph` 错误。
