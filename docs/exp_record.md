@@ -85,3 +85,57 @@
 - `inside_t128_gauss` 明显优于 `inside_t128`，从 `93.2%` 提升到 `95.6%`。
 - 本轮 `post_t64_gauss` 低于 `post_t64`，没有复现旧表里更优的那次结果。
 - 时长口径补充为对应 `client.log` 中逐步记录的 `policy_infer_ms` 统计；当前日志里没有统一输出完整 run 的总 wall-clock 时间。
+
+## 2026-03-24 Full LIBERO Baseline 结果
+
+以下结果对应 `pi05_libero_all_cross_attn_post_gauss` baseline checkpoint
+`checkpoints/pi05_libero_all_cross_attn_post_gauss/pi05_libero_all_baseline/60000`，
+统一评测口径为各 suite 使用 `--trials 50`。本节只汇总成功率，不统计时延。
+
+| suite | run dir | success / total | total success rate |
+| --- | --- | ---: | ---: |
+| `libero_spatial` | `runs/pi05_libero_all_baseline_step60000_spatial/60000_20260324_110837` | `490 / 500` | `98.0%` |
+| `libero_object` | `runs/pi05_libero_all_baseline_step60000_object/60000_20260324_110837` | `487 / 500` | `97.4%` |
+| `libero_goal` | `runs/pi05_libero_all_baseline_step60000_goal/60000_20260324_110837` | `476 / 500` | `95.2%` |
+| `libero_10` | `runs/pi05_libero_all_baseline_step60000_libero10/60000_20260324_110837` | `467 / 500` | `93.4%` |
+| `all 4 suites` | `spatial + object + goal + libero_10` | `1920 / 2000` | `96.0%` |
+
+简要观察：
+
+- 四个 suite 里，本轮最高的是 `libero_spatial`，`490 / 500`，`98.0%`。
+- 本轮最低的是 `libero_10`，`467 / 500`，`93.4%`。
+- 四套件合并后总成功率为 `96.0%`。
+
+
+
+## 2026-03-23 `cross_attn_post` `libero_all` 并行评测
+
+以下结果对应 `recipe_parallel_eval_libero_all()` 的最新一轮普通评测目录，配置固定为：
+
+- checkpoint：`checkpoints/pi05_libero_all_cross_attn_post_gauss/cross_attn_post_t64_gauss/60000`
+- policy config：`pi05_libero_all_cross_attn_post_gauss`
+- opt config：`config/pruning/cross_attn_post_t64_gauss.yaml`
+- trials：`50`
+
+| suite | run dir | success / total | total success rate | policy_infer_ms mean | policy_infer_ms p50 | policy_infer_ms p95 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `libero_spatial` | `runs/cross_attn_post_step60000_spatial/60000_20260323_162540` | `477 / 500` | `95.4%` | `83.83` | `75.95` | `76.86` |
+| `libero_object` | `runs/cross_attn_post_step60000_object/60000_20260323_162540` | `479 / 500` | `95.8%` | `81.51` | `75.40` | `77.93` |
+| `libero_goal` | `runs/cross_attn_post_step60000_goal/60000_20260323_162540` | `478 / 500` | `95.6%` | `82.72` | `75.29` | `77.65` |
+| `libero_10` | `runs/cross_attn_post_step60000_libero10/60000_20260323_162540` | `416 / 500` | `83.2%` | `75.46` | `74.75` | `76.27` |
+
+简要观察：
+
+- 四个 suite 合计 `1850 / 2000`，总成功率 `92.5%`。
+- `spatial` / `object` / `goal` 三个单套件都稳定在 `95%+`。
+- `libero_10` 明显更难，当前为 `83.2%`，是整体均值的主要下拉项。
+- 四个 suite 的 `policy_infer_ms` p50 都在 `75ms` 左右；`libero_10` 的均值更低，但 query 数明显更多，因此总评测时长最长。
+
+
+  | suite | baseline | cross_attn_post | 差值 |
+  | --- | ---: | ---: | ---: |
+  | libero_spatial | 98.0% | 95.4% | -2.6 |
+  | libero_object | 97.4% | 95.8% | -1.6 |
+  | libero_goal | 95.2% | 95.6% | +0.4 |
+  | libero_10 | 93.4% | 83.2% | -10.2 |
+  | all 4 suites | 96.0% | 92.5% | -3.5 |
