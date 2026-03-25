@@ -26,6 +26,7 @@ Options:
   --num-workers <n>            optional dataloader workers, default: 1
   --log-interval <n>           optional log interval, default: 100
   --save-interval <n>          optional save interval, default: 5000
+  --entity-name <name>         optional wandb entity override
   --project-name <name>        optional wandb project name override
   --wandb-enabled <true|false> optional, default: true
   --resume-mode <auto|true|false> optional, default: auto
@@ -44,6 +45,7 @@ batch_size="32"
 num_workers="1"
 log_interval="100"
 save_interval="5000"
+entity_name=""
 project_name=""
 wandb_enabled="true"
 resume_mode="auto"
@@ -63,6 +65,7 @@ while [[ $# -gt 0 ]]; do
     --num-workers) num_workers="${2:?}"; shift 2 ;;
     --log-interval) log_interval="${2:?}"; shift 2 ;;
     --save-interval) save_interval="${2:?}"; shift 2 ;;
+    --entity-name) entity_name="${2:?}"; shift 2 ;;
     --project-name) project_name="${2:?}"; shift 2 ;;
     --wandb-enabled) wandb_enabled="${2:?}"; shift 2 ;;
     --resume-mode) resume_mode="${2:?}"; shift 2 ;;
@@ -114,6 +117,11 @@ if [[ "${wandb_enabled}" == "true" ]]; then
   fi
 fi
 
+entity_flag=()
+if [[ -n "${entity_name}" ]]; then
+  entity_flag=(--entity-name "${entity_name}")
+fi
+
 project_flag=()
 if [[ -n "${project_name}" ]]; then
   project_flag=(--project-name "${project_name}")
@@ -127,6 +135,7 @@ CUDA_VISIBLE_DEVICES="${gpus}" "${python_bin}" -m torch.distributed.run --standa
   scripts/train_pytorch.py "${policy_config}" \
   --exp-name "${exp_name}" "${resume_flag[@]}" \
   --checkpoint-base-dir "${checkpoint_base_dir}" \
+  "${entity_flag[@]}" \
   "${project_flag[@]}" \
   --pytorch-weight-path "${base_ckpt}" \
   --data.repo_id "${data_repo_id}" \

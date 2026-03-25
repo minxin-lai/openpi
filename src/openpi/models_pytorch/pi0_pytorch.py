@@ -100,6 +100,42 @@ def _format_tensor_shape(value: Tensor | None) -> str:
     return str(tuple(int(dim) for dim in value.shape))
 
 
+def _maybe_log_prefix_summary(
+    model: nn.Module,
+    *,
+    view_token_pairs: list[tuple[int, int]],
+    lang_slots: int,
+    total_prefix_tokens: int,
+) -> None:
+    state = getattr(model, "_vla_opt_prefix_log_state", None)
+    if not isinstance(state, dict):
+        return
+    if not bool(state.get("is_main", False)):
+        return
+
+    step = int(state.get("global_step", -1))
+    interval = max(1, int(state.get("log_interval", 100)))
+    if step < 0 or step % interval != 0:
+        return
+
+    last_step = getattr(model, "_vla_opt_prefix_log_last_step", None)
+    if last_step == step:
+        return
+
+    prompt_tokens = state.get("prompt_tokens_effective", None)
+    views_repr = ",".join(f"{before}->{after}" for before, after in view_token_pairs)
+    msg = (
+        "[vla-opt] prefix_tokens"
+        f" step={step}"
+        f" views=[{views_repr}]"
+        + (f" prompt_tokens={float(prompt_tokens):.2f}" if prompt_tokens is not None else "")
+        + f" lang_slots={int(lang_slots)}"
+        + f" total_prefix_tokens={int(total_prefix_tokens)}"
+    )
+    logger.info(msg)
+    setattr(model, "_vla_opt_prefix_log_last_step", step)
+
+
 class PI0Pytorch(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -220,6 +256,7 @@ class PI0Pytorch(nn.Module):
         embs = []
         pad_masks = []
         att_masks = []
+        view_token_pairs: list[tuple[int, int]] = []
 
         # Process images
         for view_idx, (img, img_mask) in enumerate(zip(images, img_masks, strict=True)):
@@ -233,15 +270,9 @@ class PI0Pytorch(nn.Module):
 
             img_emb = self._apply_checkpoint(image_embed_func, img)
 
-            print(
-                "[vla-opt] prefix_shapes"
-                f" view_index={int(view_idx)}"
-                f" orig_embed_image.shape={_format_tensor_shape(orig_img_emb)}"
-                f" patched_embed_image.shape={_format_tensor_shape(img_emb)}",
-                flush=True,
-            )
-
             bsize, num_img_embs = img_emb.shape[:2]
+            num_orig_embs = int(orig_img_emb.shape[1]) if orig_img_emb is not None else int(num_img_embs)
+            view_token_pairs.append((num_orig_embs, int(num_img_embs)))
 
             embs.append(img_emb)
             pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
@@ -305,12 +336,11 @@ class PI0Pytorch(nn.Module):
         # Get batch size from the first dimension of the concatenated tensors
         bsize = pad_masks.shape[0]
         att_masks = att_masks[None, :].expand(bsize, len(att_masks))
-
-        print(
-            "[vla-opt] prefix_shapes"
-            f" prefix_embs.shape={_format_tensor_shape(embs)}"
-            f" total_prefix_tokens={int(embs.shape[1])}",
-            flush=True,
+        _maybe_log_prefix_summary(
+            self,
+            view_token_pairs=view_token_pairs,
+            lang_slots=int(num_lang_embs),
+            total_prefix_tokens=int(embs.shape[1]),
         )
 
         return embs, pad_masks, att_masks

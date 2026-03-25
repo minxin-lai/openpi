@@ -111,16 +111,49 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, enabled: bool = T
     if not ckpt_dir.exists():
         raise FileNotFoundError(f"Checkpoint directory {ckpt_dir} does not exist.")
 
-    if resuming:
-        run_id = (ckpt_dir / "wandb_id.txt").read_text().strip()
-        wandb.init(id=run_id, resume="must", project=config.project_name)
-    else:
+    def _start_new_run() -> None:
         wandb.init(
             name=config.exp_name,
             config=dataclasses.asdict(config),
+            entity=config.entity_name,
             project=config.project_name,
         )
         (ckpt_dir / "wandb_id.txt").write_text(wandb.run.id)
+
+    if resuming:
+        run_id_path = ckpt_dir / "wandb_id.txt"
+        if not run_id_path.exists():
+            logging.warning("Missing wandb_id.txt under %s; starting a new W&B run.", ckpt_dir)
+            _start_new_run()
+            return
+
+        run_id = run_id_path.read_text().strip()
+        try:
+            wandb.init(id=run_id, resume="must", entity=config.entity_name, project=config.project_name)
+            logging.info(
+                "W&B run ready: entity=%s project=%s run_id=%s url=%s",
+                getattr(wandb.run, "entity", config.entity_name),
+                getattr(wandb.run, "project", config.project_name),
+                getattr(wandb.run, "id", run_id),
+                getattr(wandb.run, "url", ""),
+            )
+            return
+        except wandb.errors.UsageError as exc:
+            logging.warning(
+                "Failed to resume W&B run %s in project %s: %s. Starting a new run instead.",
+                run_id,
+                config.project_name,
+                exc,
+            )
+
+    _start_new_run()
+    logging.info(
+        "W&B run ready: entity=%s project=%s run_id=%s url=%s",
+        getattr(wandb.run, "entity", config.entity_name),
+        getattr(wandb.run, "project", config.project_name),
+        getattr(wandb.run, "id", ""),
+        getattr(wandb.run, "url", ""),
+    )
 
 
 def setup_ddp():
@@ -139,6 +172,14 @@ def setup_ddp():
     if torch.cuda.is_available():
         torch.cuda.set_device(device)
     return use_ddp, local_rank, device
+
+
+def _mean_prompt_tokens_effective(lang_mask: torch.Tensor | None) -> float | None:
+    if lang_mask is None or not torch.is_tensor(lang_mask):
+        return None
+    if lang_mask.ndim != 2:
+        return None
+    return float(lang_mask.sum(dim=-1).float().mean().item())
 
 
 def cleanup_ddp():
@@ -677,11 +718,23 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
             ste_scores_std = None
             ste_keep_ratio = None
             ste_n_tokens = None
+            prompt_tokens_effective = None
 
             if ve_film_handle is not None or ve_pruning_handle is not None:
                 raw_model = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
                 lang_tokens = getattr(observation, "tokenized_prompt", None)
                 lang_mask = getattr(observation, "tokenized_prompt_mask", None)
+                prompt_tokens_effective = _mean_prompt_tokens_effective(lang_mask)
+                setattr(
+                    raw_model,
+                    "_vla_opt_prefix_log_state",
+                    {
+                        "global_step": int(global_step),
+                        "is_main": bool(is_main),
+                        "log_interval": int(config.log_interval),
+                        "prompt_tokens_effective": prompt_tokens_effective,
+                    },
+                )
                 if lang_tokens is None:
                     raise ValueError("VLA-OPT enabled but observation.tokenized_prompt is None")
                 text_tokens = raw_model.paligemma_with_expert.embed_language_tokens(lang_tokens)
@@ -696,9 +749,7 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                     if stage_cfg == "auto":
                         schedule = tuple(runtime_pruning_cfg.train_schedule) if runtime_pruning_cfg is not None else ()
                         if schedule:
-                            denom = max(1, int(config.num_train_steps) - 1)
-                            progress = min(1.0, max(0.0, float(global_step) / float(denom)))
-                            entry = resolve_train_schedule_entry(schedule, progress=progress)
+                            entry = resolve_train_schedule_entry(schedule, step=float(global_step))
                             if entry is None:
                                 raise RuntimeError("train_stage=auto with non-empty train_schedule resolved no active entry")
                             ste_stage = str(entry.stage)
@@ -832,6 +883,8 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                     info["ste_prune_keep_ratio"] = float(ste_keep_ratio)
                 if ste_n_tokens is not None:
                     info["ste_prune_n_tokens"] = int(ste_n_tokens)
+                if prompt_tokens_effective is not None:
+                    info["prompt_tokens_effective"] = float(prompt_tokens_effective)
                 collect_stage_a_stats = ve_film_handle is not None and (
                     config.wandb_enabled or logging.getLogger().isEnabledFor(logging.DEBUG)
                 )
@@ -882,6 +935,10 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                         None,
                     )
                     k_tokens = next((int(info["ste_prune_k"]) for info in reversed(infos) if "ste_prune_k" in info), None)
+                    prompt_tokens = next(
+                        (float(info["prompt_tokens_effective"]) for info in reversed(infos) if "prompt_tokens_effective" in info),
+                        None,
+                    )
                     msg += (
                         " ste_prune(stage="
                         + stage_last
@@ -891,6 +948,7 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                         + (f" keep={keep_ratio:.3f}" if keep_ratio is not None else "")
                         + (f" N={n_tokens}" if n_tokens is not None else "")
                         + (f" K={k_tokens}" if k_tokens is not None else "")
+                        + (f" prompt_tokens={prompt_tokens:.2f}" if prompt_tokens is not None else "")
                         + ")"
                     )
                 logging.info(msg)
@@ -930,10 +988,13 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
                         log_payload["ste_prune_tau"] = sum(vals_tau) / len(vals_tau)
                     vals_sm = [info.get("ste_prune_scores_mean") for info in infos if "ste_prune_scores_mean" in info]
                     vals_ss = [info.get("ste_prune_scores_std") for info in infos if "ste_prune_scores_std" in info]
+                    vals_prompt = [info.get("prompt_tokens_effective") for info in infos if "prompt_tokens_effective" in info]
                     if len(vals_sm) > 0:
                         log_payload["ste_prune_scores_mean"] = sum(vals_sm) / len(vals_sm)
                     if len(vals_ss) > 0:
                         log_payload["ste_prune_scores_std"] = sum(vals_ss) / len(vals_ss)
+                    if len(vals_prompt) > 0:
+                        log_payload["prompt_tokens_effective"] = sum(vals_prompt) / len(vals_prompt)
                     wandb.log(log_payload, step=global_step)
 
                 start_time = time.time()

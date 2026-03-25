@@ -19,6 +19,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.franka_policy as franka_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -487,18 +488,9 @@ class LeRobotFrankaDataConfig(DataConfigFactory):
         )
         data_transforms = _transforms.Group(
             inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "observation/image": "observation.images.head_camera",
-                        "observation/wrist_image": "observation.images.wrist_left_camera",
-                        "observation/state": "observation.state",
-                        "actions": "action",
-                        "prompt": "prompt",
-                    }
-                ),
-                libero_policy.LiberoInputs(model_type=model_config.model_type),
+                franka_policy.FrankaInputs(model_type=model_config.model_type),
             ],
-            outputs=[libero_policy.LiberoOutputs()],
+            outputs=[franka_policy.FrankaOutputs()],
         )
         model_transforms = ModelTransformFactory()(model_config)
 
@@ -515,6 +507,8 @@ class LeRobotFrankaDataConfig(DataConfigFactory):
 class TrainConfig:
     # Name of the config. Must be unique. Will be used to reference this config.
     name: tyro.conf.Suppress[str]
+    # W&B entity/account name.
+    entity_name: str = "mxlai-ustc"
     # Project name.
     project_name: str = "openpi"
     # Experiment name. Will be used to name the metadata and checkpoint directories.

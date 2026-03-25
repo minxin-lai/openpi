@@ -15,16 +15,16 @@ prune_layer: null
 score_num_layers: 3
 score_mlp_hidden_dim: null
 train_schedule:
-  - progress: 0.00
+  - progress: 0
     stage: mask
     keep_ratio: 1.00
-  - progress: 0.33
+  - progress: 20000
     stage: gather
     keep_ratio: 0.75
-  - progress: 0.50
+  - progress: 30000
     stage: gather
     keep_ratio: 0.50
-  - progress: 0.67
+  - progress: 40000
     stage: gather
     keep_ratio: 0.25
 gaussian:
