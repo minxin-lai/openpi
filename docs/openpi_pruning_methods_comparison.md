@@ -32,7 +32,7 @@
 
 而“推理侧链路”表示：
 
-- 当前 `load_pruning_config(...) -> to_runtime("serve") -> enable_pi05_pruning_from_runtime_config(...)` 这条明确接通的实际执行路径
+- 当前 `load_pruning_config(...) -> to_runtime("serve") -> enable_openpi_pruning_from_runtime_config(...)` 这条明确接通的实际执行路径
 
 ## 3. 最核心差别
 
@@ -259,7 +259,7 @@ load_pytorch
   ↓
 to_runtime("serve")
   ↓
-enable_pi05_pruning_from_runtime_config
+enable_openpi_pruning_from_runtime_config
   ↓
 先启用 FiLM
   ↓
@@ -302,7 +302,7 @@ load_pytorch
   ↓
 to_runtime("serve")
   ↓
-enable_pi05_pruning_from_runtime_config
+enable_openpi_pruning_from_runtime_config
   ↓
 先启用 FiLM
   ↓

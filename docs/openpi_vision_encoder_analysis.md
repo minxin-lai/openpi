@@ -140,5 +140,4 @@ tokens = multi_modal_projector(h)  # [B,N,D_proj]
 ## 实施注意事项（后续 Step A3 会用到）
 
 1. **dtype 逻辑**：`SiglipVisionTransformer.forward` 会在进入 encoder 前根据权重 dtype 做一次 cast（见实现）；手动 forward 时需要保持一致（建议跟随 patch_embedding / encoder 第一层 q_proj 的 dtype）。
-2. **不侵入 third_party**：建议在 `src/vla_opt/adapters/openpi_pi05.py` 内实现 `encode_vision_with_film(...)`，不要直接改 `third_party/openpi`。
-
+2. **不侵入 third_party**：建议在 `src/vla_opt/adapters/openpi_pytorch.py` 内实现 `encode_vision_with_film(...)`，不要直接改 `third_party/openpi`。

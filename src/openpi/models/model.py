@@ -257,8 +257,8 @@ class BaseModelConfig(abc.ABC):
 
         if pruning_config_path or os.environ.get("VLA_OPT_OBSERVE_CONFIG", "").strip():
             try:
-                from vla_opt.integrations.openpi_pi05 import (
-                    enable_pi05_pruning_from_runtime_config,
+                from vla_opt.integrations.openpi_pytorch import (
+                    enable_openpi_pruning_from_runtime_config,
                 )
                 from vla_opt.observe.openpi import build_openpi_observer_from_env
                 from vla_opt.pruning import load_pruning_config
@@ -272,7 +272,7 @@ class BaseModelConfig(abc.ABC):
             if pruning_config_path:
                 pruning_cfg = load_pruning_config(pruning_config_path)
                 runtime_cfg = pruning_cfg.to_runtime("serve")
-                enable_pi05_pruning_from_runtime_config(model, runtime_cfg)
+                enable_openpi_pruning_from_runtime_config(model, runtime_cfg)
                 logger.info("VLA-OPT pruning enabled (serve): config=%s mode=%s", pruning_config_path, pruning_cfg.mode)
 
             observer = build_openpi_observer_from_env()

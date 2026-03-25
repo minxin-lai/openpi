@@ -552,15 +552,15 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
         if str(vla_src) not in sys.path:
             sys.path.insert(0, str(vla_src))
 
-        from vla_opt.integrations.openpi_pi05 import (
-            enable_pi05_pruning_from_runtime_config,
+        from vla_opt.integrations.openpi_pytorch import (
+            enable_openpi_pruning_from_runtime_config,
         )
         from vla_opt.pruning import keep_ratio_to_k, load_pruning_config, resolve_train_schedule_entry
         from modules.ste_pruning import pruning_losses as _pruning_losses
 
         pruning_cfg = load_pruning_config(extra.vla_opt_pruning_config)
         runtime_pruning_cfg = pruning_cfg.to_runtime("train")
-        ve_film_handle, ve_pruning_handle = enable_pi05_pruning_from_runtime_config(model, runtime_pruning_cfg)
+        ve_film_handle, ve_pruning_handle = enable_openpi_pruning_from_runtime_config(model, runtime_pruning_cfg)
         pruning_losses = _pruning_losses
 
         if ve_film_handle is not None:
