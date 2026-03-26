@@ -18,6 +18,7 @@ import orbax.checkpoint as ocp
 import safetensors
 import torch
 
+from openpi.models_pytorch import lora_pytorch
 from openpi.models_pytorch import pi0_pytorch
 from openpi.shared import image_tools
 import openpi.shared.array_typing as at
@@ -244,6 +245,11 @@ class BaseModelConfig(abc.ABC):
     def load_pytorch(self, train_config, weight_path: str):
         logger.info(f"train_config: {train_config}")
         model = pi0_pytorch.PI0Pytorch(config=train_config.model)
+        lora_config = getattr(train_config, "lora_config", None)
+        lora_enabled = lora_config is not None and bool(lora_config.enabled)
+        if lora_config is not None and bool(lora_config.enabled):
+            lora_pytorch.apply_lora_to_pi0_pytorch(model, lora_config)
+            logger.info("PyTorch LoRA enabled during checkpoint load")
 
         # Optional VLA-OPT wrappers (for checkpoints saved with wrapped SigLIP layers).
         #
@@ -280,7 +286,15 @@ class BaseModelConfig(abc.ABC):
                 setattr(model, "_vla_opt_observer", observer)
                 logger.info("VLA-OPT observe enabled (serve)")
 
-        safetensors.torch.load_model(model, weight_path)
+        if lora_enabled:
+            missing, unexpected = safetensors.torch.load_model(model, weight_path, strict=False)
+            checkpoint_has_lora = lora_pytorch.validate_lora_weight_load_result(missing, unexpected)
+            if checkpoint_has_lora:
+                logger.info("Loaded LoRA continuation weights from %s", weight_path)
+            else:
+                logger.info("Loaded base weights from %s; LoRA adapters remain initialized", weight_path)
+        else:
+            safetensors.torch.load_model(model, weight_path)
         return model
 
     @abc.abstractmethod

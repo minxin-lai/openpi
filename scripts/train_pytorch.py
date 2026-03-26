@@ -47,6 +47,7 @@ import tqdm
 import wandb
 
 import openpi.models.pi0_config
+import openpi.models_pytorch.lora_pytorch as lora_utils
 import openpi.models_pytorch.pi0_pytorch
 import openpi.shared.normalize as _normalize
 import openpi.training.config as _config
@@ -217,6 +218,23 @@ def get_model_parameters(model):
         if isinstance(model, torch.nn.parallel.DistributedDataParallel)
         else model.parameters()
     )
+
+
+def _is_lora_enabled(config: _config.TrainConfig) -> bool:
+    lora_config = getattr(config, "lora_config", None)
+    return lora_config is not None and bool(lora_config.enabled)
+
+
+def _enable_parameters(params) -> int:
+    count = 0
+    for param in params:
+        param.requires_grad = True
+        count += int(param.numel())
+    return count
+
+
+def _collect_trainable_param_ids(model: torch.nn.Module) -> set[int]:
+    return {id(param) for param in model.parameters() if param.requires_grad}
 
 
 def save_checkpoint(model, optimizer, global_step, config, is_main, data_config):
@@ -525,15 +543,36 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
 
     model = openpi.models_pytorch.pi0_pytorch.PI0Pytorch(model_cfg).to(device)
 
+    lora_enabled = _is_lora_enabled(config)
+    lora_trainable_param_ids: set[int] = set()
+    if lora_enabled:
+        logging.info("PyTorch LoRA enabled")
+        frozen_count, trainable_count = lora_utils.apply_lora_to_pi0_pytorch(model, config.lora_config)
+        lora_trainable_param_ids = _collect_trainable_param_ids(model)
+        logging.info("LoRA applied: trainable_params=%s frozen_params=%s", trainable_count, frozen_count)
+
     # Load weights from weight_loader if specified (for fine-tuning).
     #
-    # IMPORTANT: do this before any Stage-A wrapping, otherwise wrapped modules
-    # introduce a ".block." prefix in state_dict keys and strict loading fails.
+    # IMPORTANT:
+    # - if LoRA is enabled, adapters must exist before loading a LoRA continuation checkpoint
+    # - do this before any Stage-A wrapping, otherwise wrapped modules introduce a ".block."
+    #   prefix in state_dict keys and strict loading fails.
     if config.pytorch_weight_path is not None:
         logging.info("Loading weights from: %s", config.pytorch_weight_path)
         model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
-        safetensors.torch.load_model(model, model_path)
-        logging.info("Loaded PyTorch weights from %s", config.pytorch_weight_path)
+        if lora_enabled:
+            missing, unexpected = safetensors.torch.load_model(model, model_path, strict=False)
+            checkpoint_has_lora = lora_utils.validate_lora_weight_load_result(missing, unexpected)
+            if checkpoint_has_lora:
+                logging.info("Loaded LoRA continuation weights from %s", config.pytorch_weight_path)
+            else:
+                logging.info(
+                    "Loaded base weights from %s; LoRA adapters remain at their initialized values",
+                    config.pytorch_weight_path,
+                )
+        else:
+            safetensors.torch.load_model(model, model_path)
+            logging.info("Loaded PyTorch weights from %s", config.pytorch_weight_path)
 
     # Optional: VLA-OPT pruning integration (Pi0.5 only).
     ve_film_handle = None
@@ -620,24 +659,34 @@ def train_loop(config: _config.TrainConfig, *, extra: argparse.Namespace):
     decay_steps = config.lr_schedule.decay_steps
     end_lr = config.lr_schedule.decay_lr
 
-    # Create optimizer with config parameters
+    # Create optimizer with config parameters.
+    #
+    # Ordering matters:
+    # 1) LoRA may freeze the base and leave adapters/trainable modules enabled.
+    # 2) VLA-OPT may additionally request freeze_base and must keep its own trainable heads enabled.
     freeze_base = bool(runtime_pruning_cfg.freeze_base) if runtime_pruning_cfg is not None else False
     if freeze_base:
         for p in model.parameters():
             p.requires_grad = False
+        if lora_enabled:
+            for p in model.parameters():
+                if id(p) in lora_trainable_param_ids:
+                    p.requires_grad = True
         if ve_film_handle is not None:
-            for p in ve_film_handle.trainable_parameters():
-                p.requires_grad = True
+            _enable_parameters(ve_film_handle.trainable_parameters())
         if ve_pruning_handle is not None:
-            for p in ve_pruning_handle.trainable_parameters():
-                p.requires_grad = True
-        trainable_params = [p for p in model.parameters() if p.requires_grad]
-        if len(trainable_params) == 0:
-            raise ValueError("No trainable params after freezing base")
-        optim_params = trainable_params
-        logging.info("VLA-OPT: froze base model; trainable_params=%s", sum(int(p.numel()) for p in trainable_params))
+            _enable_parameters(ve_pruning_handle.trainable_parameters())
+        logging.info("VLA-OPT: froze base model and preserved LoRA/pruning trainable parameters")
     else:
-        optim_params = list(model.parameters())
+        if ve_film_handle is not None:
+            _enable_parameters(ve_film_handle.trainable_parameters())
+        if ve_pruning_handle is not None:
+            _enable_parameters(ve_pruning_handle.trainable_parameters())
+
+    optim_params = [p for p in model.parameters() if p.requires_grad]
+    if len(optim_params) == 0:
+        raise ValueError("No trainable params selected for optimizer")
+    logging.info("Optimizer trainable params=%s", sum(int(p.numel()) for p in optim_params))
 
     optim = torch.optim.AdamW(
         optim_params,

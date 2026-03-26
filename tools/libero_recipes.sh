@@ -197,6 +197,22 @@ recipe_train_baseline() {
     --num-train-steps 60000
 }
 
+recipe_train_lora_jax_aligned() {
+  local policy_config="pi05_libero_lora_pytorch"
+  local exp_name="lora_jax_aligned"
+
+  recipe_run bash tools/train_pi05_baseline.sh \
+    --policy-config "${policy_config}" \
+    --exp-name "${exp_name}" \
+    --checkpoint-base-dir /workspace/laiminxin/vla-opt/third_party/openpi/checkpoints \
+    --gpus 3,4 \
+    --project-name vla-opt \
+    --base-ckpt /workspace/laiminxin/models/pi05_base_pytorch \
+    --data-repo-id /workspace/laiminxin/datasets/lerobot_datasets/physical-intelligence/libero \
+    --batch-size 16 \
+    --num-train-steps 30000
+}
+
 recipe_train_pruning_t64() {
   local policy_config="pi05_libero_all_cross_attn_post_gauss"
   local opt_config="config/pruning/cross_attn_post_t64_gauss.yaml"
