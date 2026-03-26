@@ -229,6 +229,24 @@ recipe_train_pruning_t64() {
     --num-train-steps 60000
 }
 
+recipe_train_lora_pruning_t64() {
+  local policy_config="pi05_libero_lora_pytorch"
+  local opt_config="config/pruning/cross_attn_post_t64_gauss_lora.yaml"
+  local exp_name="cross_attn_post_t64_gauss_lora"
+
+  recipe_run bash tools/train_pi05_experiment.sh \
+    --opt-config "${opt_config}" \
+    --policy-config "${policy_config}" \
+    --exp-name "${exp_name}" \
+    --checkpoint-base-dir /workspace/laiminxin/vla-opt/third_party/openpi/checkpoints \
+    --gpus 5 \
+    --project-name vla-opt \
+    --base-ckpt /workspace/laiminxin/models/pi05_base_pytorch \
+    --data-repo-id /workspace/laiminxin/datasets/lerobot_datasets/physical-intelligence/libero \
+    --batch-size 16 \
+    --num-train-steps 30000
+}
+
 recipe_train_pruning_t128() {
   local policy_config="pi05_libero_all_cross_attn_post_gauss"
   local opt_config="config/pruning/cross_attn_post_t128_gauss.yaml"
@@ -243,6 +261,24 @@ recipe_train_pruning_t128() {
     --base-ckpt /workspace/laiminxin/models/pi05_base_pytorch \
     --data-repo-id /workspace/laiminxin/datasets/lerobot_datasets/physical-intelligence/libero \
     --num-train-steps 90000
+}
+
+recipe_train_lora_pruning_t128() {
+  local policy_config="pi05_libero_lora_pytorch"
+  local opt_config="config/pruning/cross_attn_post_t128_gauss_lora.yaml"
+  local exp_name="cross_attn_post_t128_gauss_lora"
+
+  recipe_run bash tools/train_pi05_experiment.sh \
+    --opt-config "${opt_config}" \
+    --policy-config "${policy_config}" \
+    --exp-name "${exp_name}" \
+    --checkpoint-base-dir /workspace/laiminxin/vla-opt/third_party/openpi/checkpoints \
+    --gpus 3,4 \
+    --project-name vla-opt \
+    --base-ckpt /workspace/laiminxin/models/pi05_base_pytorch \
+    --data-repo-id /workspace/laiminxin/datasets/lerobot_datasets/physical-intelligence/libero \
+    --batch-size 16 \
+    --num-train-steps 30000
 }
 
 # ============================================================================

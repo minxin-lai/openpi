@@ -1,0 +1,33 @@
+mode: post_encoder
+num_blocks: 3
+k: 64
+conditioning:
+  type: film
+score_head:
+  type: cross_attn
+  num_heads: 8
+train_stage: auto
+serve_stage: gather
+train_tau: 2.0
+train_tau_final: 2.0
+serve_tau: 1.0
+prune_layer: null
+score_num_layers: 3
+score_mlp_hidden_dim: null
+train_schedule:
+  - progress: 0
+    stage: mask
+    keep_ratio: 1.00
+  - progress: 10000
+    stage: gather
+    keep_ratio: 0.75
+  - progress: 15000
+    stage: gather
+    keep_ratio: 0.50
+  - progress: 20000
+    stage: gather
+    keep_ratio: 0.25
+gaussian:
+  enabled: true
+  sigma: 0.65
+  kernel_size: null
